@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="da">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Food Planner{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script>
+        tailwind.config = {
+            darkMode: 'media',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#0ea5e9',
+                        accent: '#6366f1'
+                    }
+                }
+            }
+        }
+    </script>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 min-h-screen">
+    <nav class="bg-gradient-to-r from-primary to-accent text-white shadow-lg">
+        <div class="max-w-4xl mx-auto px-4 py-4 flex items-center justify-between">
+            <a href="/" class="text-xl font-bold flex items-center gap-2">
+                🥗 Food Planner
+            </a>
+            <div class="flex gap-4">
+                <a href="/" class="hover:opacity-80 transition">Dashboard</a>
+                <a href="/edit" class="hover:opacity-80 transition">Edit List</a>
+            </div>
+        </div>
+    </nav>
+    
+    <main class="max-w-4xl mx-auto px-4 py-6">
+        {% block content %}{% endblock %}
+    </main>
+    
+    <footer class="text-center text-slate-400 dark:text-slate-600 text-sm py-6">
+        Food Planner AI 🤖
+    </footer>
+</body>
+</html>

@@ -1,0 +1,9 @@
+python-dotenv
+requests
+beautifulsoup4
+google-genai
+playwright
+markdown
+flask
+gspread
+google-auth

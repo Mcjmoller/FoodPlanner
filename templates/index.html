@@ -1,0 +1,113 @@
+{% extends "layout.html" %}
+{% block title %}Dashboard - Food Planner{% endblock %}
+{% block content %}
+<div class="space-y-6">
+    <!-- Run Button Card -->
+    <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-md p-6">
+        <div class="flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div>
+                <h2 class="text-xl font-bold text-slate-800 dark:text-white">Generate New Plan</h2>
+                <p class="text-slate-500 dark:text-slate-400 text-sm">Scrapes deals and creates your meal plan</p>
+            </div>
+            <button id="runBtn" onclick="runPlanner()"
+                class="w-full sm:w-auto px-6 py-3 bg-gradient-to-r from-primary to-accent text-white font-semibold rounded-xl shadow hover:shadow-lg transform hover:scale-105 transition disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none">
+                🚀 Generate Plan
+            </button>
+        </div>
+
+        <!-- Progress Log -->
+        <div id="progressContainer" class="hidden mt-4">
+            <div class="bg-slate-100 dark:bg-slate-700 rounded-lg p-4 max-h-48 overflow-y-auto">
+                <div id="progressLog" class="text-sm text-slate-600 dark:text-slate-300 space-y-1 font-mono"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Current Plan Card -->
+    <div class="bg-white dark:bg-slate-800 rounded-2xl shadow-md p-6">
+        <h2 class="text-xl font-bold text-slate-800 dark:text-white mb-4">📋 Current Meal Plan</h2>
+        <div id="planContent" class="prose dark:prose-invert max-w-none">
+            {% if plan_html %}
+            {{ plan_html | safe }}
+            {% else %}
+            <p class="text-slate-400 italic">No plan generated yet. Click "Generate Plan" to create one!</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+    let eventSource = null;
+
+    function runPlanner() {
+        const btn = document.getElementById('runBtn');
+        const container = document.getElementById('progressContainer');
+        const log = document.getElementById('progressLog');
+
+        btn.disabled = true;
+        btn.innerHTML = '⏳ Running...';
+        container.classList.remove('hidden');
+        log.innerHTML = '';
+
+        // Start the job
+        fetch('/api/run', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.status === 'started') {
+                    listenForProgress();
+                } else {
+                    addLog('Error: ' + data.status);
+                    resetButton();
+                }
+            })
+            .catch(err => {
+                addLog('Error: ' + err);
+                resetButton();
+            });
+    }
+
+    function listenForProgress() {
+        eventSource = new EventSource('/api/status');
+
+        eventSource.onmessage = function (e) {
+            if (e.data === '__DONE__') {
+                eventSource.close();
+                addLog('✅ Complete!');
+                resetButton();
+                refreshPlan();
+            } else if (e.data !== '__KEEPALIVE__') {
+                addLog(e.data);
+            }
+        };
+
+        eventSource.onerror = function () {
+            eventSource.close();
+            resetButton();
+        };
+    }
+
+    function addLog(msg) {
+        const log = document.getElementById('progressLog');
+        const line = document.createElement('div');
+        line.textContent = '→ ' + msg;
+        log.appendChild(line);
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function resetButton() {
+        const btn = document.getElementById('runBtn');
+        btn.disabled = false;
+        btn.innerHTML = '🚀 Generate Plan';
+    }
+
+    function refreshPlan() {
+        fetch('/api/plan')
+            .then(res => res.json())
+            .then(data => {
+                if (data.html) {
+                    document.getElementById('planContent').innerHTML = data.html;
+                }
+            });
+    }
+</script>
+{% endblock %}
