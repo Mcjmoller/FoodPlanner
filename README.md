@@ -1,45 +1,51 @@
-# Food Planner Cloud ☁️🥗
+# Food Planner - Batch Cooking (Rule-Based)
 
-A smart food planning assistant that finds the best grocery deals, generates a meal plan using AI, and syncs everything to Google Sheets and your email.
+A robust, AI-free meal planning system designed for efficiency and gut health. This tool scrapes weekly deals from major Danish supermarkets (REMA 1000, Netto, 365 Discount, Lidl), matches them against your buying list and pantry, and generates a batched meal plan to minimize cooking time.
 
-## Features
-- **Deal Scraping**: Checks specific stores (REMA 1000, Netto, etc.) for offers.
-- **AI Planning**: Uses Google Gemini to create a meal plan based on deals + your preferences.
-- **Google Sheets Sync**:
-  - `MealPlan`: Viewing the generated plan.
-  - `BuyingList`: Add items you want to buy (from your phone).
-  - `PantryList`: Add items you already have.
-- **Email Notifications**: received a formatted HTML email with your plan.
-- **Automated**: Runs automatically via GitHub Actions (or locally).
+## 🌟 Key Features
 
-## Setup
+*   **Rule-Based Matching Engine**: Uses fuzzy logic (`thefuzz`) to identify the best deals without hallucinations.
+*   **2x Weekly Batch Cooking**: Optimized schedule (Cook Mon/Wed, eat leftovers Tue/Thu/Fri) to save time.
+*   **Low-FODMAP Filter**: Prioritizes gut-friendly ingredients (Potatoes, Rice) and flags high-FODMAP items (Onion, Wheat).
+*   **Scraped Prices**: Fetches real-time prices from `etilbudsavis.dk` and `coop.dk`.
+*   **Responsive Email Reports**: Sends a beautiful HTML meal plan with "Cooking Day" badges and grouped shopping lists.
+*   **Google Sheets Integration**: Syncs directly with your `Food Planner` spreadsheet.
 
-1.  **Install Dependencies**:
+## 🚀 Installation
+
+1.  **Clone the repository**:
+    ```bash
+    git clone https://github.com/yourusername/food-planner.git
+    cd food-planner
+    ```
+
+2.  **Install Dependencies**:
     ```bash
     pip install -r requirements.txt
+    playwright install chromium
     ```
-2.  **Environment Variables**: Create a `.env` file:
-    ```ini
-    GEMINI_API_KEY=your_key
-    EMAIL_ADDRESS=your_email
-    EMAIL_PASSWORD=your_app_password
-    EMAIL_RECEIVER=recipient_email
-    ```
-3.  **Google Cloud Setup**:
-    - Place your Service Account JSON key as `credentials.json`.
-    - Share your "Food Planner" Sheet with the service account email.
 
-## Running
+3.  **Configuration**:
+    *   Create a `.env` file with your email credentials (`EMAIL_ADDRESS`, `EMAIL_PASSWORD`, etc.).
+    *   Place your Google Service Account `credentials.json` in the root folder.
 
-**Cloud Mode (Google Sheets integration):**
+## 🛠️ Usage
+
+Run the script manually or via cron:
+
 ```bash
 python foodPlaner_cloud.py
 ```
 
-**Local Mode (File-based):**
-```bash
-python foodPlaner.py
-```
+### Mock Data Mode
+To test the pipeline with dummy data (if you don't want to type into Sheets), set `USE_MOCK_DATA = True` in `foodPlaner_cloud.py`.
 
-## Hosting (GitHub Actions)
-The workflow in `.github/workflows/run-planner.yml` runs automatically every Sunday at 8:00 UTC. Ensure you add your secrets to the GitHub Repository settings.
+## 🧩 Architecture
+
+*   **Engine**: Python 3.12 + `thefuzz` (Levenshtein Distance)
+*   **Scraper**: Microsoft Playwright (Headless Chromium)
+*   **Database**: Google Sheets (via `gspread` v6.1.2)
+*   **Templating**: Jinja2 (HTML Email)
+
+## 📄 License
+MIT

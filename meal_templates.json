@@ -1,0 +1,60 @@
+[
+    {
+        "name": "Spaghetti Carbonara",
+        "ingredients": [
+            "Spaghetti",
+            "Æg",
+            "Bacon",
+            "Parmesan"
+        ]
+    },
+    {
+        "name": "Kylling i Karry",
+        "ingredients": [
+            "Kylling",
+            "Karry",
+            "Ris",
+            "Løg",
+            "Kokosmælk"
+        ]
+    },
+    {
+        "name": "Vegetarisk Chili",
+        "ingredients": [
+            "Bønner",
+            "Hakkede tomater",
+            "Løg",
+            "Peberfrugt",
+            "Chili"
+        ]
+    },
+    {
+        "name": "Boller i Karry",
+        "ingredients": [
+            "Hakket svinekød",
+            "Karry",
+            "Ris",
+            "Løg",
+            "Mælk"
+        ]
+    },
+    {
+        "name": "Pasta med Kødsovs",
+        "ingredients": [
+            "Hakket oksekød",
+            "Pasta",
+            "Hakkede tomater",
+            "Løg",
+            "Gulerødder"
+        ]
+    },
+    {
+        "name": "Omelet med Spinat",
+        "ingredients": [
+            "Æg",
+            "Spinat",
+            "Tomater",
+            "Ost"
+        ]
+    }
+]

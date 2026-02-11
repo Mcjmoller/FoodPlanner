@@ -9,6 +9,8 @@ from email.message import EmailMessage
 import markdown
 import json
 
+from api_utils import retry_on_rate_limit, response_cache, gemini_rate_limiter
+
 # --- CONFIGURATION ---
 load_dotenv()
 
@@ -33,6 +35,18 @@ STORES = {
     "365 Discount": "https://365discount.coop.dk/365avis/",
     "Lidl": "https://etilbudsavis.dk/Lidl"
 }
+
+
+@retry_on_rate_limit(max_retries=5, base_delay=2.0)
+def _call_gemini(prompt: str) -> str:
+    """Make a rate-limited call to Gemini API with automatic retry."""
+    gemini_rate_limiter.wait()
+    response = client.models.generate_content(
+        model='gemini-2.0-flash',
+        contents=prompt
+    )
+    return response.text
+
 
 def scrape_deals(store_name, url):
     print(f"Scraping {store_name} using Playwright...")
@@ -116,6 +130,13 @@ def generate_meal_plan(all_deals, buying_list, pantry_list):
     buying_list_str = ", ".join(buying_list) if buying_list else "None"
     pantry_list_str = ", ".join(pantry_list) if pantry_list else "None"
     
+    # Check cache first
+    cache_key = f"meal_plan_{hash(frozenset(buying_list + pantry_list + [all_deals[:500]]))}"
+    cached_result = response_cache.get(cache_key)
+    if cached_result:
+        print("Using cached meal plan...")
+        return cached_result
+    
     prompt = f"""
     Below is raw text scraped from grocery deal sites:
     {all_deals}
@@ -154,11 +175,10 @@ def generate_meal_plan(all_deals, buying_list, pantry_list):
     
     print("Generating your meal plan...")
     try:
-        response = client.models.generate_content(
-            model='gemini-flash-latest',
-            contents=prompt
-        )
-        return response.text
+        result = _call_gemini(prompt)
+        # Cache the result
+        response_cache.set(cache_key, result)
+        return result
     except Exception as e:
         return f"Model Error: {e}"
 

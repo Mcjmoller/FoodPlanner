@@ -1,9 +1,7 @@
-python-dotenv
-requests
-beautifulsoup4
-google-genai
-playwright
-markdown
-flask
-gspread
+gspread==6.1.2
 google-auth
+playwright
+python-dotenv
+thefuzz
+python-levenshtein
+jinja2

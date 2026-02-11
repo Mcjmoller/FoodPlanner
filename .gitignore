@@ -16,3 +16,5 @@ client_secret.json
 # Debug logs
 debug_*.txt
 test_output.txt
+
+response_cache.json
