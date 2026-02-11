@@ -1,60 +1,206 @@
 [
     {
-        "name": "Spaghetti Carbonara",
+        "name": "Spaghetti Carbonara (Glutenfri)",
         "ingredients": [
-            "Spaghetti",
+            "Glutenfri Pasta",
             "Æg",
             "Bacon",
             "Parmesan"
         ]
     },
     {
-        "name": "Kylling i Karry",
+        "name": "Kylling i Karry (Low FODMAP)",
         "ingredients": [
             "Kylling",
             "Karry",
             "Ris",
-            "Løg",
-            "Kokosmælk"
-        ]
-    },
-    {
-        "name": "Vegetarisk Chili",
-        "ingredients": [
-            "Bønner",
-            "Hakkede tomater",
-            "Løg",
-            "Peberfrugt",
-            "Chili"
-        ]
-    },
-    {
-        "name": "Boller i Karry",
-        "ingredients": [
-            "Hakket svinekød",
-            "Karry",
-            "Ris",
-            "Løg",
-            "Mælk"
-        ]
-    },
-    {
-        "name": "Pasta med Kødsovs",
-        "ingredients": [
-            "Hakket oksekød",
-            "Pasta",
-            "Hakkede tomater",
-            "Løg",
+            "Kokosmælk",
+            "Ingefær",
             "Gulerødder"
         ]
     },
     {
-        "name": "Omelet med Spinat",
+        "name": "Ovnstegt Kylling med Rodfrugter",
+        "ingredients": [
+            "Hel Kylling",
+            "Kartofler",
+            "Gulerødder",
+            "Pastinak",
+            "Timian"
+        ]
+    },
+    {
+        "name": "Laks med Kartofler og Dildsovs",
+        "ingredients": [
+            "Laks",
+            "Kartofler",
+            "Citron",
+            "Dild",
+            "Laktosefri Fraiche"
+        ]
+    },
+    {
+        "name": "Dansk Bøf med Kartofler",
+        "ingredients": [
+            "Hakket oksekød",
+            "Kartofler",
+            "Agurk",
+            "Eddike"
+        ]
+    },
+    {
+        "name": "Wok med Kylling og Grønt",
+        "ingredients": [
+            "Kylling",
+            "Risnudler",
+            "Gulerødder",
+            "Peberfrugt",
+            "Soja",
+            "Æg"
+        ]
+    },
+    {
+        "name": "Fiskefrikadeller med Remoulade",
+        "ingredients": [
+            "Fiskefars",
+            "Kartofler",
+            "Citron",
+            "Remoulade",
+            "Rugbrød"
+        ]
+    },
+    {
+        "name": "Fyldte Peberfrugter",
+        "ingredients": [
+            "Peberfrugt",
+            "Hakket oksekød",
+            "Ris",
+            "Tomatpuré",
+            "Ost"
+        ]
+    },
+    {
+        "name": "Rice Bowl med Rejer",
+        "ingredients": [
+            "Rejer",
+            "Ris",
+            "Avocado",
+            "Agurk",
+            "Edamame bønner",
+            "Mayonnaise"
+        ]
+    },
+    {
+        "name": "Svensk Pølseret (Low FODMAP)",
+        "ingredients": [
+            "Pølser",
+            "Kartofler",
+            "Tomatpuré",
+            "Laktosefri Fløde",
+            "Paprika"
+        ]
+    },
+    {
+        "name": "Æggekage med Bacon",
         "ingredients": [
             "Æg",
-            "Spinat",
+            "Bacon",
             "Tomater",
-            "Ost"
+            "Purløg",
+            "Rugbrød"
+        ]
+    },
+    {
+        "name": "Koteletter i Fad",
+        "ingredients": [
+            "Svinekoteletter",
+            "Hakkede tomater",
+            "Laktosefri Fløde",
+            "Paprika",
+            "Ris"
+        ]
+    },
+    {
+        "name": "Pasta med Kødsovs (Glutenfri)",
+        "ingredients": [
+            "Hakket oksekød",
+            "Glutenfri Pasta",
+            "Hakkede tomater",
+            "Gulerødder",
+            "Oregano"
+        ]
+    },
+    {
+        "name": "Tacos (Majs)",
+        "ingredients": [
+            "Hakket oksekød",
+            "Tacoskaller",
+            "Salat",
+            "Agurk",
+            "Tomater",
+            "Ost",
+            "Cheddar"
+        ]
+    },
+    {
+        "name": "Stegt Flæsk med Persillesovs",
+        "ingredients": [
+            "Flæsk i skiver",
+            "Kartofler",
+            "Persille",
+            "Laktosefri Mælk",
+            "Maizena"
+        ]
+    },
+    {
+        "name": "Torsk i Ovn med Grønt",
+        "ingredients": [
+            "Torsk",
+            "Squash",
+            "Tomater",
+            "Olivenolie",
+            "Ris"
+        ]
+    },
+    {
+        "name": "Hønsekødssuppe",
+        "ingredients": [
+            "Hel Kylling",
+            "Gulerødder",
+            "Knoldselleri",
+            "Suppehorn",
+            "Porre (Grøn del)"
+        ]
+    },
+    {
+        "name": "Mørbradgryde",
+        "ingredients": [
+            "Svinemørbrad",
+            "Bacon",
+            "Pølser",
+            "Laktosefri Fløde",
+            "Tomatpuré",
+            "Ris"
+        ]
+    },
+    {
+        "name": "Brændende Kærlighed (Moderne)",
+        "ingredients": [
+            "Kartofler",
+            "Bacon",
+            "Rødbeder",
+            "Purløg",
+            "Smør"
+        ]
+    },
+    {
+        "name": "Omelet med Skinke og Ost",
+        "ingredients": [
+            "Æg",
+            "Skinke",
+            "Ost",
+            "Tomater",
+            "Spinat"
         ]
     }
 ]

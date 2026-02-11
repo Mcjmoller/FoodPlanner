@@ -1,39 +1,39 @@
-name: Run Food Planner
+name: Run Food Planner (Weekly)
 
 on:
-  # Run every Sunday at 8 AM UTC (9 AM CET)
   schedule:
+    # Runs at 08:00 UTC (09:00 CET/CEST) every Sunday
     - cron: '0 8 * * 0'
-  
-  # Manual trigger from GitHub UI or API
-  workflow_dispatch:
+  workflow_dispatch:  # Allow manual trigger
 
 jobs:
-  generate-plan:
+  run-planner:
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-      
-      - name: Install dependencies
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install Dependencies
         run: |
-          pip install gspread google-auth playwright google-genai markdown
+          pip install -r requirements.txt
           playwright install chromium
           playwright install-deps
-      
-      - name: Create credentials file
-        run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
-      
+
+      - name: Create Credentials File
+        # Writes the content of the GOOGLE_CREDENTIALS_JSON secret to credentials.json
+        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+
       - name: Run Food Planner
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          FOODPLANNER_AUTOMATED: "1"  # Disable interactive prompts
         run: python foodPlaner_cloud.py
