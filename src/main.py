@@ -684,7 +684,7 @@ def verify_credentials():
         errors.append("GEMINI_API_KEY is not set in environment / .env file.")
 
     # Check Google Sheets credentials file
-    creds_file = "credentials.json"
+    creds_file = os.path.join(BASE_DIR, "credentials.json")
     if not os.path.exists(creds_file):
         errors.append(f"Google Sheets credentials file '{creds_file}' not found.")
     else:
@@ -1110,7 +1110,8 @@ def generate_shopping_list(buying_list, schedule, all_deals, pantry_list):
 
 def get_sheets_client():
     # Rate limiter removed as per request
-    creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    creds_path = os.path.join(BASE_DIR, "credentials.json")
+    creds = Credentials.from_service_account_file(creds_path, scopes=SCOPES)
     return gspread.authorize(creds)
 
 def save_to_sheets(schedule, shopping_list):
@@ -1269,7 +1270,7 @@ def main():
         
         # Initialize Gemini client
         # Use v1beta for preview models
-        gemini_client = genai.Client(api_key=api_key, api_version="v1beta")
+        gemini_client = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
         logger.info(f"[SUCCESS] Gemini client initialized (model: {GEMINI_MODEL})")
         
         # ── STEP 1: Load Data ──
