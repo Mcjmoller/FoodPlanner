@@ -1,51 +1,64 @@
-# Food Planner - Batch Cooking (Rule-Based)
+# FoodPlanner v2.0 - Hybrid Engine
 
-A robust, AI-free meal planning system designed for efficiency and gut health. This tool scrapes weekly deals from major Danish supermarkets (REMA 1000, Netto, 365 Discount, Lidl), matches them against your buying list and pantry, and generates a batched meal plan to minimize cooking time.
+A professional, automated meal planning and shopping list optimization engine for Danish households.
 
-## Key Features
+## Vision
+The FoodPlanner Hybrid Engine combines the precision of deterministic rule-based matching with the intelligence of LLMs (Gemini 3 Flash) to generate weekly batch-cooking meal plans that are optimized for budget, seasonal deals, and Low-FODMAP dietary constraints.
 
-*   **Rule-Based Matching Engine**: Uses fuzzy logic (thefuzz) to identify the best deals without hallucinations.
-*   **2x Weekly Batch Cooking**: Optimized schedule (Cook Mon/Wed, eat leftovers Tue/Thu/Fri) to save time.
-*   **Low-FODMAP Filter**: Prioritizes gut-friendly ingredients (Potatoes, Rice) and flags high-FODMAP items (Onion, Wheat).
-*   **Scraped Prices**: Fetches real-time prices from etilbudsavis.dk and coop.dk.
-*   **Responsive Email Reports**: Sends a professional HTML meal plan with "Cooking Day" badges and grouped shopping lists.
-*   **Google Sheets Integration**: Syncs directly with your Food Planner spreadsheet.
+## Architecture & Logic
+- **Advanced NLP Matching**: Uses `thefuzz` and custom linguistic heuristics to match raw grocery deals with meal templates while avoiding "trap" products (e.g., matching "Kylling" but avoiding "Kyllingenuggets").
+- **Gemini 3 Flash (v1beta)**: Orchestrates the weekly plan, ensuring a balanced diet and adherence to the 2-day batch cooking schedule.
+- **Low-FODMAP Integration**: Filters and scores meals based on high/low FODMAP ingredients.
+- **Multi-Store Scraper**: High-performance scraping of Danish grocery stores (365 Discount, Rema 1000, etc.) using Playwright.
 
-## Installation
-
-1.  **Clone the repository**:
-    ```bash
-    git clone https://github.com/yourusername/food-planner.git
-    cd food-planner
-    ```
-
-2.  **Install Dependencies**:
-    ```bash
-    pip install -r requirements.txt
-    playwright install chromium
-    ```
-
-3.  **Configuration**:
-    *   Create a .env file with your email credentials (EMAIL_ADDRESS, EMAIL_PASSWORD, etc.).
-    *   Place your Google Service Account credentials.json in the root folder.
-
-## Usage
-
-Run the script manually or via cron:
-
-```bash
-python foodPlaner_cloud.py
+## Project Structure
+```text
+FoodPlanner/
+├── src/                # Python source code (main.py, tests)
+├── config/             # Meal templates and rule definitions
+├── templates/          # Jinja2 email templates
+├── data/               # Persistent caches and fallback data
+└── requirements.txt    # Pinned dependencies
 ```
 
-### Mock Data Mode
-To test the pipeline with dummy data (if you don't want to type into Sheets), set USE_MOCK_DATA = True in foodPlaner_cloud.py.
+## Setup Instructions
 
-## Architecture
+1. **Environment Variables**: Create a `.env` file in the root directory:
+   ```env
+   GEMINI_API_KEY=your_key_here
+   SPREADSHEET_NAME=FoodPlanner
+   EMAIL_ADDRESS=your_email@gmail.com
+   EMAIL_PASSWORD=your_app_password
+   EMAIL_RECEIVER=receiver@example.com
+   SMTP_SERVER=smtp.gmail.com
+   SMTP_PORT=587
+   ```
 
-*   **Engine**: Python 3.12 + thefuzz (Levenshtein Distance)
-*   **Scraper**: Microsoft Playwright (Headless Chromium)
-*   **Database**: Google Sheets (via gspread v6.1.2)
-*   **Templating**: Jinja2 (HTML Email)
+2. **Google Sheets**:
+   - Save your Service Account JSON as `credentials.json` in the root.
+   - Ensure the spreadsheet has worksheets: `MealPlan`, `ShoppingList`, `BuyingList`, `PantryList`.
 
-## License
-MIT
+3. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   playwright install chromium
+   ```
+
+## Troubleshooting 404 Errors
+If you encounter a `[ERROR] Model Not Found (404)`, ensure that:
+1. You are using the `v1beta` endpoint (handled automatically in `main.py`).
+2. The `GEMINI_MODEL` string is correctly set to `gemini-3-flash-preview` or a valid stable equivalent (v1beta compatibility required for preview models).
+
+## Weekly Schedule Format
+The engine generates a 4-portion batch schedule:
+
+| Day | Type | Activity |
+| :--- | :--- | :--- |
+| **Monday** | Cook | Primary Meal A (Portions x4) |
+| **Tuesday** | Leftover | Meal A (Heated) |
+| **Wednesday** | Cook | Primary Meal B (Portions x4) |
+| **Thursday** | Leftover | Meal B (Heated) |
+| **Fri-Sun** | Flexible | Pantry staples / Flexible meals |
+
+---
+**Status**: [STABLE] | **Emoji Policy**: [STRICT-NONE] | **Logging**: [PROFESSIONAL-ASCII]

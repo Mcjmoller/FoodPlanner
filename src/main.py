@@ -1,7 +1,7 @@
 """
-Food Planner - Rule-Based Engine (No AI)
-Uses 'thefuzz' for fuzzy matching deals against shopping lists and meal templates.
-Zero latency, deterministic, and free.
+Food Planner - Hybrid Engine (Rule-Based + Gemini 3 Flash Preview)
+Uses 'thefuzz' for fuzzy matching and Gemini 3 Flash via google-genai SDK
+for AI-enhanced meal planning and Low-FODMAP optimization.
 """
 import os
 import re
@@ -10,28 +10,84 @@ import time
 import sys
 import smtplib
 import ssl
+import sqlite3
+import argparse
+import math
 from datetime import datetime
 from email.message import EmailMessage
+from html.parser import HTMLParser
+from io import StringIO
 
 import gspread
 from google.oauth2.service_account import Credentials
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
 from jinja2 import Template
+from google import genai
+from google.genai import types as genai_types
+from google.api_core import exceptions as api_exceptions
 
 # FUZZY LOGIC LIBRARIES
 from thefuzz import fuzz, process
 
-# Rate limiting for Sheets only
+# --- CLI ARGUMENT PARSING ---
+def parse_args():
+    parser = argparse.ArgumentParser(description="Food Planner - Automated Meal Planning")
+    parser.add_argument(
+        "--cron", "--auto",
+        action="store_true",
+        dest="auto_mode",
+        help="Run in headless automation mode (no prompts, log to file)"
+    )
+    return parser.parse_args()
+
+CLI_ARGS = parse_args()
+AUTO_MODE = CLI_ARGS.auto_mode
+
 # --- LOGGING SETUP ---
 import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s', datefmt='%H:%M')
+
+if AUTO_MODE:
+    # Redirect all logs to a timestamped file for automation
+    _log_filename = f"automation_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.FileHandler(_log_filename, encoding='utf-8'),
+        ]
+    )
+    # Also write a symlink-like "latest" log for easy access
+    _latest_log = "automation_log.txt"
+    if os.path.exists(_latest_log):
+        os.remove(_latest_log)
+    try:
+        # Copy path reference for Windows compatibility
+        import shutil
+        # We'll append to this later; for now just note the filename
+        with open(_latest_log, 'w', encoding='utf-8') as f:
+            f.write(f"Latest log: {_log_filename}\n")
+    except Exception:
+        pass
+else:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(message)s',
+        datefmt='%H:%M'
+    )
+
 logger = logging.getLogger("FoodPlanner")
 
 
+# --- DIRECTORIES ---
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CONFIG_DIR = os.path.join(BASE_DIR, "config")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+
 # --- CONFIGURATION ---
-load_dotenv()
-USE_MOCK_DATA = True
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 MATCH_THRESHOLD = 80
 FODMAP_SAFE_FILTER = True
 
@@ -60,6 +116,46 @@ STORES = {
     "365 Discount": "https://365discount.coop.dk/365avis/",
     "Lidl": "https://etilbudsavis.dk/Lidl",
 }
+
+# ============================================================
+#  CACHING & DATABASE (SQLite)
+# ============================================================
+DB_FILE = os.path.join(DATA_DIR, "deals_cache.db")
+CACHE_EXPIRY_SECONDS = 86400 * 3 # 3 days
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_FILE)
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS store_deals_cache (
+            store_name TEXT PRIMARY KEY,
+            raw_text TEXT,
+            timestamp REAL
+        )
+    ''')
+    conn.commit()
+    return conn
+
+def get_cached_raw_text(store_name):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute('SELECT raw_text, timestamp FROM store_deals_cache WHERE store_name = ?', (store_name,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if row:
+        raw_text, timestamp = row
+        if time.time() - timestamp < CACHE_EXPIRY_SECONDS:
+            return raw_text
+    return None
+
+def set_cached_raw_text(store_name, raw_text):
+    conn = get_db_connection()
+    conn.execute('''
+        INSERT OR REPLACE INTO store_deals_cache (store_name, raw_text, timestamp)
+        VALUES (?, ?, ?)
+    ''', (store_name, raw_text, time.time()))
+    conn.commit()
+    conn.close()
 
 # ============================================================
 #  DATA STRUCTURES & PARSING
@@ -494,146 +590,284 @@ def find_cheapest_deal(item_name, all_deals, threshold=MATCH_THRESHOLD):
 
 def load_meal_templates():
     try:
-        with open("meal_templates.json", "r", encoding="utf-8") as f:
+        path = os.path.join(CONFIG_DIR, "meal_templates.json")
+        if not os.path.exists(path):
+             return []
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        logger.error(f"Could not load meal_templates.json: {e}")
+        logger.error(f"[ERROR] Could not load meal_templates.json: {e}")
         return []
 
-# --- EMAIL TEMPLATE (Embedded Jinja2) ---
-EMAIL_TEMPLATE_STRING = """
-<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-</head>
-<body style="margin: 0; padding: 0; background-color: #f0f2f5; font-family: -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;">
+# --- EMAIL TEMPLATE LOADER ---
+def load_email_template():
+    try:
+        path = os.path.join(TEMPLATES_DIR, "email_template.html")
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        logger.error(f"[ERROR] Could not load email_template.html: {e}")
+        return "<html><body>Meal Plan Attached</body></html>"
 
-    <!-- WRAPPER -->
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color: #f0f2f5;">
-    <tr><td align="center" style="padding: 20px 10px;">
-    <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.08);">
+# ============================================================
+#  HTML/JS STRIPPER (Token Squeezer)
+# ============================================================
 
-        <!-- HEADER -->
-        <tr>
-            <td style="background: linear-gradient(135deg, #2d3436 0%, #636e72 100%); padding: 28px 30px; text-align: center;">
-                <div style="font-size: 24px; font-weight: 700; color: #ffffff; letter-spacing: 0.5px;">
-                    Ugens Madplan
-                </div>
-                <div style="font-size: 13px; color: #b2bec3; margin-top: 6px;">
-                    {{ today_date }} &middot; Low-FODMAP &middot; 2 personer
-                </div>
-            </td>
-        </tr>
+class _HTMLTextExtractor(HTMLParser):
+    """Strips HTML tags and extracts plain text."""
+    def __init__(self):
+        super().__init__()
+        self._result = StringIO()
+        self._skip_tags = {"script", "style", "noscript"}
+        self._skip_depth = 0
 
-        <!-- MEAL PLAN SECTION -->
-        <tr>
-            <td style="padding: 24px 30px 8px 30px;">
-                <div style="font-size: 15px; font-weight: 700; color: #2d3436; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px; border-left: 3px solid #e17055; padding-left: 10px;">
-                    Madplan
-                </div>
-            </td>
-        </tr>
-        {% for row in schedule %}
-        <tr>
-            <td style="padding: 0 30px;">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-bottom: 6px;">
-                <tr>
-                    <td width="90" style="padding: 10px 12px; font-size: 13px; font-weight: 600; color: #636e72; vertical-align: top;">
-                        {{ row.day_name }}
-                    </td>
-                    <td style="padding: 10px 12px; border-left: 2px solid #f0f2f5;">
-                        {% if row.type == 'cook' %}
-                            <span style="display: inline-block; background-color: #e17055; color: white; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 6px;">Lav Mad</span>
-                            <span style="font-size: 14px; font-weight: 500; color: #2d3436;">{{ row.meal_name }}</span>
-                        {% elif row.type == 'leftover' %}
-                            <span style="display: inline-block; background-color: #dfe6e9; color: #636e72; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 6px;">Rester</span>
-                            <span style="font-size: 14px; color: #636e72;">{{ row.meal_name }}</span>
-                        {% else %}
-                            <span style="display: inline-block; background-color: #ffeaa7; color: #636e72; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 10px; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 6px;">Fleksibel</span>
-                            <span style="font-size: 14px; color: #636e72; font-style: italic;">{{ row.meal_name }}</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                </table>
-            </td>
-        </tr>
-        {% endfor %}
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in self._skip_tags:
+            self._skip_depth += 1
 
-        <!-- DIVIDER -->
-        <tr>
-            <td style="padding: 16px 30px;">
-                <div style="border-top: 1px solid #eee;"></div>
-            </td>
-        </tr>
+    def handle_endtag(self, tag):
+        if tag.lower() in self._skip_tags and self._skip_depth > 0:
+            self._skip_depth -= 1
 
-        <!-- SHOPPING LIST SECTION -->
-        <tr>
-            <td style="padding: 8px 30px 8px 30px;">
-                <div style="font-size: 15px; font-weight: 700; color: #2d3436; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px; border-left: 3px solid #00b894; padding-left: 10px;">
-                    Indkobsliste
-                </div>
-            </td>
-        </tr>
+    def handle_data(self, data):
+        if self._skip_depth == 0:
+            self._result.write(data)
 
-        {% if not shopping_list_by_store %}
-        <tr>
-            <td style="padding: 0 30px 20px 30px;">
-                <div style="background-color: #ffeaa7; padding: 14px 16px; border-radius: 8px; font-size: 13px; color: #636e72;">
-                    Ingen tilbud matcher din liste denne uge.
-                </div>
-            </td>
-        </tr>
-        {% else %}
-            {% for store, items in shopping_list_by_store.items() %}
-            <tr>
-                <td style="padding: 0 30px 16px 30px;">
-                    <!-- STORE CARD -->
-                    <div style="background-color: #fafbfc; border-radius: 8px; border: 1px solid #eee; overflow: hidden;">
-                        <!-- Store Header -->
-                        <div style="background-color: #dfe6e9; padding: 10px 16px; font-size: 13px; font-weight: 700; color: #2d3436; text-transform: uppercase; letter-spacing: 0.5px;">
-                            {{ store }}
-                        </div>
-                        <!-- Items -->
-                        <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-                        {% for item in items %}
-                            <tr style="border-bottom: 1px solid #f0f2f5;">
-                                <td style="padding: 10px 16px; font-size: 14px; color: #2d3436;">
-                                    {{ item.name }}
-                                    {% if item.buy_qty and item.buy_qty > 1 %}
-                                        <span style="display: inline-block; background-color: #74b9ff; color: white; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 8px; margin-left: 4px;">x{{ item.buy_qty }}</span>
-                                    {% endif %}
-                                </td>
-                                <td align="right" style="padding: 10px 16px; font-size: 14px; font-weight: 600; color: #00b894; white-space: nowrap;">
-                                    {% if item.price and item.price > 0 %}{{ "%.0f"|format(item.price) }} kr{% else %}&ndash;{% endif %}
-                                </td>
-                            </tr>
-                        {% endfor %}
-                        </table>
-                    </div>
-                </td>
-            </tr>
-            {% endfor %}
-        {% endif %}
+    def get_text(self):
+        return self._result.getvalue()
 
-        <!-- FOOTER -->
-        <tr>
-            <td style="padding: 20px 30px 24px 30px; text-align: center;">
-                <div style="font-size: 11px; color: #b2bec3; line-height: 1.6;">
-                    Optimeret efter Low-FODMAP principper<br>
-                    Genereret automatisk &middot; FoodPlanner v2.0
-                </div>
-            </td>
-        </tr>
 
-    </table>
-    </td></tr>
-    </table>
+def strip_html_js(raw_text):
+    """
+    Token Squeezer: Strips all HTML tags, JavaScript, and CSS from scraped text.
+    Keeps only the visible text content for clean Gemini prompts.
+    """
+    if not raw_text:
+        return ""
 
-</body>
-</html>
+    # Step 1: Remove <script>...</script> and <style>...</style> blocks
+    cleaned = re.sub(r'<script[^>]*>.*?</script>', '', raw_text, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r'<style[^>]*>.*?</style>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+    cleaned = re.sub(r'<noscript[^>]*>.*?</noscript>', '', cleaned, flags=re.DOTALL | re.IGNORECASE)
+
+    # Step 2: Parse remaining HTML to extract text
+    extractor = _HTMLTextExtractor()
+    try:
+        extractor.feed(cleaned)
+        text = extractor.get_text()
+    except Exception:
+        # Fallback: brute-force strip tags
+        text = re.sub(r'<[^>]+>', ' ', cleaned)
+
+    # Step 3: Collapse whitespace
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Step 4: Remove common JS artifacts
+    text = re.sub(r'(?:function|var|let|const|window\.|document\.)\s*\w+', '', text)
+
+    return text
+
+
+# ============================================================
+#  CREDENTIAL VERIFICATION
+# ============================================================
+
+def verify_credentials():
+    """
+    Pre-flight check: Verifies API key and Google Sheets credentials exist.
+    Exits with code 1 if missing (prevents Task Scheduler from hanging).
+    """
+    errors = []
+
+    # Check Gemini API Key
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        errors.append("GEMINI_API_KEY is not set in environment / .env file.")
+
+    # Check Google Sheets credentials file
+    creds_file = "credentials.json"
+    if not os.path.exists(creds_file):
+        errors.append(f"Google Sheets credentials file '{creds_file}' not found.")
+    else:
+        try:
+            with open(creds_file, "r") as f:
+                creds_data = json.load(f)
+            if "client_email" not in creds_data:
+                errors.append(f"'{creds_file}' does not contain a valid service account.")
+        except (json.JSONDecodeError, IOError) as e:
+            errors.append(f"'{creds_file}' is invalid: {e}")
+
+    if errors:
+        for err in errors:
+            logger.critical(f"[ERROR] CREDENTIAL CHECK FAILED: {err}")
+        logger.critical("Exiting with code 1. Fix credentials before next run.")
+        sys.exit(1)
+
+    logger.info("[SUCCESS] Credential check passed.")
+    return api_key
+
+
+# ============================================================
+#  GEMINI 3 FLASH PREVIEW - RETRY LOGIC
+# ============================================================
+
+GEMINI_MODEL = "gemini-3-flash-preview"
+GEMINI_MAX_RETRIES = 5
+GEMINI_BACKOFF_BASE = 2  # seconds
+GEMINI_COOLDOWN_SECONDS = 30
+
+
+def call_gemini_with_retry(client, prompt, response_mime_type=None):
+    """
+    Calls Gemini 3.0 Flash with robust retry logic:
+    - 429 (Resource Exhausted): Exponential backoff (2s → 4s → 8s → 16s → 32s)
+    - 500/503 (Server Error): 30-second cooldown + single retry
+    - Other errors: Raise immediately
+    
+    Args:
+        client: google.genai.Client instance
+        prompt: The prompt string to send
+        response_mime_type: Optional MIME type for structured output (e.g. "application/json")
+    
+    Returns:
+        The response text from Gemini
+    """
+    config = {}
+    if response_mime_type:
+        config = genai_types.GenerateContentConfig(
+            response_mime_type=response_mime_type,
+        )
+
+    last_exception = None
+    server_error_retried = False
+
+    for attempt in range(1, GEMINI_MAX_RETRIES + 1):
+        try:
+            logger.info(f"[INFO] Gemini API call (attempt {attempt}/{GEMINI_MAX_RETRIES})...")
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=prompt,
+                config=config if config else None,
+            )
+            logger.info("[SUCCESS] Gemini response received.")
+            return response.text
+
+        except api_exceptions.NotFound as e:
+            logger.critical(f"[ERROR] Model '{GEMINI_MODEL}' not found. Please check model naming conventions.")
+            logger.critical("Stopping execution to prevent useless retries.")
+            sys.exit(1)
+
+        except Exception as e:
+            error_str = str(e).lower()
+            last_exception = e
+
+            # --- 429: Resource Exhausted (Rate Limit) ---
+            if "429" in str(e) or "resource exhausted" in error_str or "rate" in error_str:
+                wait_time = GEMINI_BACKOFF_BASE ** attempt
+                logger.warning(
+                    f"[WARNING] 429 Rate Limit hit. Exponential backoff: "
+                    f"waiting {wait_time}s before retry {attempt}/{GEMINI_MAX_RETRIES}..."
+                )
+                time.sleep(wait_time)
+                continue
+
+            # --- 500/503: Server Error ---
+            elif "500" in str(e) or "503" in str(e) or "internal" in error_str or "unavailable" in error_str:
+                if not server_error_retried:
+                    logger.warning(
+                        f"[WARNING] Server Error (500/503). Cooling down for "
+                        f"{GEMINI_COOLDOWN_SECONDS}s before single retry..."
+                    )
+                    time.sleep(GEMINI_COOLDOWN_SECONDS)
+                    server_error_retried = True
+                    continue
+                else:
+                    logger.error("[ERROR] Server error persists after cooldown. Giving up.")
+                    raise
+
+            # --- Other errors: fail fast ---
+            else:
+                logger.error(f"[ERROR] Unrecoverable Gemini error: {e}")
+                raise
+
+    # Exhausted all retries
+    logger.error(f"[ERROR] All {GEMINI_MAX_RETRIES} Gemini retries exhausted.")
+    raise last_exception
+
+
+# ============================================================
+#  AI MEAL PLAN GENERATOR
+# ============================================================
+
+def generate_ai_meal_plan(client, templates, deals_summary, pantry):
+    """
+    Uses Gemini 3.0 Flash to generate an optimized weekly meal plan.
+    Enforces JSON output via response_mime_type="application/json".
+    
+    Returns:
+        Parsed JSON dict with meal plan, or None on failure.
+    """
+    # Build a compact summary of available info
+    template_names = [t["name"] for t in templates]
+    template_info = json.dumps(
+        [{"name": t["name"], "ingredients": t["ingredients"]} for t in templates],
+        ensure_ascii=False
+    )
+
+    prompt = f"""You are a meal planning assistant for a Danish household of 2 people.
+Rules:
+- Plan follows Low-FODMAP diet principles
+- Batch cooking: Cook on Monday and Wednesday, eat leftovers the next day
+- Friday/Saturday/Sunday are flexible days
+- Use ingredients available in current deals when possible
+- All meal names should be in Danish
+
+Available meal templates:
+{template_info}
+
+Current store deals summary (cleaned):
+{deals_summary[:3000]}
+
+Pantry items already available:
+{json.dumps(pantry, ensure_ascii=False)}
+
+Generate a weekly meal plan as JSON with this exact structure:
+{{
+    "meal_plan": [
+        {{
+            "day": "Mandag",
+            "type": "cook",
+            "meal_name": "...",
+            "ingredients": ["ingredient1", "ingredient2", ...],
+            "portions": 4
+        }},
+        {{
+            "day": "Tirsdag",
+            "type": "leftover",
+            "meal_name": "... (Rester)",
+            "portions": 0
+        }},
+        ...
+    ],
+    "reasoning": "Brief explanation of choices"
+}}
+
+Include all 7 days. Monday and Wednesday are "cook" days, Tuesday and Thursday are "leftover" days, Friday/Saturday/Sunday are "flexible" days.
 """
+
+    try:
+        response_text = call_gemini_with_retry(
+            client, prompt, response_mime_type="application/json"
+        )
+        result = json.loads(response_text)
+        logger.info(f"[INFO] AI Meal Plan generated. Reasoning: {result.get('reasoning', 'N/A')}")
+        return result
+    except json.JSONDecodeError as e:
+        logger.error(f"[ERROR] Gemini returned invalid JSON: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"[ERROR] AI meal plan generation failed: {e}")
+        return None
+
 
 def generate_weekly_plan(templates, pantry, all_deals):
     """
@@ -714,7 +948,6 @@ def generate_shopping_list(buying_list, schedule, all_deals, pantry_list):
     Step 2: Subtract Pantry (e.g. have 4 eggs -> need 12).
     Step 3: Find best deal & Optimize Packs (e.g. Deal=10 pack -> Buy 2 packs).
     """
-    import math
     
     # 1. TALLY NEEDS
     # Key = Ingredient Name, Val = {"amount": X, "unit": Y}
@@ -836,7 +1069,6 @@ def generate_shopping_list(buying_list, schedule, all_deals, pantry_list):
             # Fallback to 1 pack per X amount?
             # Basic fallback: 1 pack covers 'base rule amount' * 4?
             
-            import math
             packs_to_buy = 1
             
             if unit == deal_unit or (unit in ["g", "kg", "ml", "l"] and deal_unit in ["g", "kg", "ml", "l"]):
@@ -882,39 +1114,47 @@ def get_sheets_client():
     return gspread.authorize(creds)
 
 def save_to_sheets(schedule, shopping_list):
-    gc = get_sheets_client()
-    sh = gc.open(SPREADSHEET_NAME)
-    
-    # 1. Meal Plan
-    try: ws = sh.worksheet("MealPlan")
-    except: ws = sh.add_worksheet("MealPlan", 100, 10)
-    ws.clear()
-    
-    headers = ["Day", "Meal", "Ingredients"]
-    rows = [[m['day_name'], m['meal_name'], ", ".join(m.get('ingredients', []))] for m in schedule]
-    ws.update(range_name="A1", values=[headers] + rows)
-    
-    # 2. Shopping List
-    try: ws_shop = sh.worksheet("ShoppingList")
-    except: ws_shop = sh.add_worksheet("ShoppingList", 100, 10)
-    ws_shop.clear()
-    
-    headers_shop = ["Item", "Qty", "Price", "Store", "Found Match"]
-    rows_shop = []
-    for item in shopping_list:
-        price = f"{item['price']:.2f}" if item['price'] else "-"
-        match = item['found_name'] if item['found_name'] else "-"
-        qty = f"x{item['buy_qty']}"
-        rows_shop.append([item['name'], qty, price, item['store'], match])
+    try:
+        gc = get_sheets_client()
+        sh = gc.open(SPREADSHEET_NAME)
         
-    ws_shop.update(range_name="A1", values=[headers_shop] + rows_shop)
-    logger.info("✅ Saved to Google Sheets")
+        # 1. Meal Plan
+        try: ws = sh.worksheet("MealPlan")
+        except: ws = sh.add_worksheet("MealPlan", 100, 10)
+        ws.clear()
+        
+        headers = ["Day", "Meal", "Ingredients"]
+        rows = [[m['day_name'], m['meal_name'], ", ".join(m.get('ingredients', []))] for m in schedule]
+        ws.update(range_name="A1", values=[headers] + rows)
+        
+        # 2. Shopping List
+        try: ws_shop = sh.worksheet("ShoppingList")
+        except: ws_shop = sh.add_worksheet("ShoppingList", 100, 10)
+        ws_shop.clear()
+        
+        headers_shop = ["Item", "Qty", "Price", "Store", "Found Match"]
+        rows_shop = []
+        for item in shopping_list:
+            price = f"{item['price']:.2f}" if item['price'] else "-"
+            match = item['found_name'] if item['found_name'] else "-"
+            qty = f"x{item['buy_qty']}"
+            rows_shop.append([item['name'], qty, price, item['store'], match])
+            
+        ws_shop.update(range_name="A1", values=[headers_shop] + rows_shop)
+        logger.info("[SUCCESS] Saved to Google Sheets")
+    except Exception as e:
+        logger.error(f"[ERROR] Failed to save to Google Sheets: {e}")
+        # Save locally as a fallback
+        with open("last_shopping_list_export.json", "w", encoding="utf-8") as f:
+            json.dump({"schedule": schedule, "shopping_list": shopping_list}, f)
+        logger.info("Shopping list saved locally to last_shopping_list_export.json as fallback.")
 
 def send_email_notification(schedule, shopping_list_grouped, total_savings):
     if not EMAIL_ADDRESS: return
     
-    # Use Embedded Template
-    template = Template(EMAIL_TEMPLATE_STRING)
+    # Load External Template
+    html_template = load_email_template()
+    template = Template(html_template)
     
     html_content = template.render(
         schedule=schedule,
@@ -935,7 +1175,7 @@ def send_email_notification(schedule, shopping_list_grouped, total_savings):
         server.starttls(context=context)
         server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
         server.send_message(msg)
-    logger.info("📧 Email sent successfully.")
+    logger.info("[MAIL_STATUS] Email sent successfully.")
 
 # ============================================================
 #  MAIN PIPELINE
@@ -948,16 +1188,23 @@ def scrape_deals_raw(store, url):
         page = browser.new_page()
         page.goto(url)
         try: 
+            # Hardening for specifically 365 Discount or others that load slow
+            if "365" in store.lower():
+                page.wait_for_load_state("domcontentloaded")
+                # Confirm render by waiting for common product selectors
+                try:
+                    page.wait_for_selector("article, .product, .item, .tile", timeout=7000)
+                except:
+                    logger.warning(f"[WARNING] {store}: Render confirmation selector not found, proceeding...")
+            
             page.wait_for_load_state("networkidle", timeout=10000)
             
             # Simple Cookie Clicker
             try:
-                # Look for common cookie buttons
-                # Using broad regex for Danish/English consent buttons
                 btn = page.locator("button, a").filter(has_text=re.compile(r"accepter|tillad|ok|godkend|yes|ja|luk|accept", re.IGNORECASE)).first
                 if btn.count() > 0:
                     btn.click(timeout=1000)
-                    page.wait_for_timeout(1000) # Wait for overlay to fade
+                    page.wait_for_timeout(1000)
             except:
                 pass
                 
@@ -969,72 +1216,152 @@ def scrape_deals_raw(store, url):
         return text
 
 def load_lists_from_sheets():
-    gc = get_sheets_client()
-    sh = gc.open(SPREADSHEET_NAME)
-    buy = [i.strip() for i in sh.worksheet("BuyingList").col_values(1)[1:] if i.strip()]
-    pantry = [i.strip() for i in sh.worksheet("PantryList").col_values(1)[1:] if i.strip()]
+    fallback_file = os.path.join(DATA_DIR, "pantry_buying_fallback.json")
     
-    if not buy and USE_MOCK_DATA:
-        logger.warning(f"⚠️ MOCK DATA ACTIVE: Injecting fake buying items because list was empty.")
-        buy = ["Mælk", "Kylling", "Pasta", "Oksekød", "Rugbrød"]
+    try:
+        gc = get_sheets_client()
+        sh = gc.open(SPREADSHEET_NAME)
+        buy = [i.strip() for i in sh.worksheet("BuyingList").col_values(1)[1:] if i.strip()]
+        pantry = [i.strip() for i in sh.worksheet("PantryList").col_values(1)[1:] if i.strip()]
         
+        # Save successful fetch to fallback cache
+        with open(fallback_file, "w", encoding="utf-8") as f:
+            json.dump({"buy": buy, "pantry": pantry, "timestamp": time.time()}, f)
+            
+    except Exception as e:
+        logger.error(f"[ERROR] Google Sheets API Error: {e}. Attempting to load from local fallback...")
+        if os.path.exists(fallback_file):
+            try:
+                with open(fallback_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    buy = data.get("buy", [])
+                    pantry = data.get("pantry", [])
+                    logger.info("[INFO] Loaded successfully from local fallback cache.")
+            except Exception as e_fallback:
+                logger.error(f"[ERROR] Fallback cache failed: {e_fallback}")
+                buy, pantry = [], []
+        else:
+            logger.error("[ERROR] No local fallback cache found.")
+            buy, pantry = [], []
+    
     return buy, pantry
 
 def is_automated_run():
-    """Detect if running via Task Scheduler/Cron."""
-    return os.environ.get("FOODPLANNER_AUTOMATED") == "1"
+    """Detect if running via Task Scheduler/Cron (legacy env var or --auto flag)."""
+    return AUTO_MODE or os.environ.get("FOODPLANNER_AUTOMATED") == "1"
 
 def main():
-    logger.info("="*60)
-    logger.info("  FOOD PLANNER: BATCH ENGINE")
+    logger.info("============================================================")
+    logger.info("  FOOD PLANNER: HYBRID ENGINE (Rule-Based + Gemini 3 Flash)")
+    logger.info("============================================================")
     
     if is_automated_run():
-        logger.info("🤖 AUTOMATED RUN DETECTED: Disabling stdin to prevent hangs.")
-        sys.stdin.close()
-        
-    logger.info("="*60)
+        logger.info("[INFO] AUTOMATED RUN DETECTED: Suppressing all interactive prompts.")
+        try:
+            sys.stdin.close()
+        except Exception:
+            pass
     
     try:
-        # 1. Load Data
+        # ── STEP 0: Credential Pre-Flight ──
+        logger.info("Verifying credentials...")
+        api_key = verify_credentials()
+        
+        # Initialize Gemini client
+        # Use v1beta for preview models
+        gemini_client = genai.Client(api_key=api_key, api_version="v1beta")
+        logger.info(f"[SUCCESS] Gemini client initialized (model: {GEMINI_MODEL})")
+        
+        # ── STEP 1: Load Data ──
         logger.info("Loading templates & lists...")
         templates = load_meal_templates()
         buying, pantry = load_lists_from_sheets()
         
-        # 2. Scrape & Parse
+        # ── STEP 2: Scrape & Parse ──
         logger.info("Scraping stores...")
         all_deals = []
+        raw_texts_for_ai = []  # Collect cleaned text for Gemini
+        
         for store, url in STORES.items():
             try:
-                raw_text = scrape_deals_raw(store, url)
-                structured = parse_scraped_text(raw_text, store)
+                raw_text = get_cached_raw_text(store)
+                if not raw_text:
+                    logger.info(f"  Scraping fresh deals for {store} via Playwright...")
+                    raw_text = scrape_deals_raw(store, url)
+                    if raw_text:
+                        set_cached_raw_text(store, raw_text)
+                else:
+                    logger.info(f"  Using cached deals for {store}.")
                 
-                if not structured:
-                    logger.warning(f"  ⚠️ No deals found for {store}.")
-                
-                all_deals.extend(structured)
+                if raw_text:
+                    # Token Squeezer: Strip HTML/JS before parsing
+                    cleaned_text = strip_html_js(raw_text)
+                    raw_texts_for_ai.append(f"--- {store} ---\n{cleaned_text[:1500]}")
+                    
+                    structured = parse_scraped_text(raw_text, store)
+                    if not structured:
+                        logger.warning(f"[WARNING] No deals found for {store}.")
+                    all_deals.extend(structured)
+                else:
+                    logger.warning(f"[WARNING] Could not retrieve raw text for {store}.")
             except Exception as e:
-                logger.error(f"Failed to scrape {store}: {e}")
+                logger.error(f"[ERROR] Failed to process {store}: {e}")
         
         logger.info(f"Found {len(all_deals)} total deals.")
-
-        # 3. Matching Engine
-        logger.info("Generating meal plan...")
-        schedule = generate_weekly_plan(templates, pantry, all_deals)
-        grouped_list, flat_list, total_savings = generate_shopping_list(buying, schedule, all_deals, pantry)
         
-        # 4. Save
+        # ── STEP 3: Build deals summary for AI ──
+        deals_summary = "\n".join(raw_texts_for_ai) if raw_texts_for_ai else "No deals available."
+
+        # ── STEP 4: Generate Meal Plan (AI + Rule-Based Fallback) ──
+        logger.info("Generating meal plan...")
+        
+        # Try AI-enhanced plan first
+        ai_plan = None
+        try:
+            ai_plan = generate_ai_meal_plan(gemini_client, templates, deals_summary, pantry)
+        except Exception as e:
+            logger.warning(f"[WARNING] AI meal plan failed, using rule-based fallback: {e}")
+        
+        if ai_plan and "meal_plan" in ai_plan:
+            logger.info("[INFO] Using AI-generated meal plan.")
+            # Convert AI plan to internal schedule format
+            schedule = []
+            for day_plan in ai_plan["meal_plan"]:
+                schedule.append({
+                    "day_name": day_plan.get("day", "Unknown"),
+                    "type": day_plan.get("type", "flexible"),
+                    "meal_name": day_plan.get("meal_name", "Flexible"),
+                    "portions": day_plan.get("portions", 0),
+                    "ingredients": day_plan.get("ingredients", []),
+                })
+        else:
+            logger.info("[INFO] Using rule-based meal plan (fallback).")
+            schedule = generate_weekly_plan(templates, pantry, all_deals)
+        
+        # ── STEP 5: Generate Shopping List ──
+        grouped_list, flat_list, total_savings = generate_shopping_list(
+            buying, schedule, all_deals, pantry
+        )
+        
+        # ── STEP 6: Save to Google Sheets ──
         logger.info("Saving to Google Sheets...")
         save_to_sheets(schedule, flat_list)
         
-        # 5. Email
+        # ── STEP 7: Send Email ──
         logger.info("Sending email...")
         send_email_notification(schedule, grouped_list, total_savings)
         
-        logger.info("✅ PIPELINE COMPLETE")
+        logger.info("[SUCCESS] PIPELINE COMPLETE")
 
+    except SystemExit:
+        # Let sys.exit() propagate (from credential check)
+        raise
     except Exception as e:
-        logger.critical(f"FATAL ERROR: {e}")
+        logger.critical(f"[ERROR] FATAL ERROR: {e}")
+        if AUTO_MODE:
+            sys.exit(2)  # Non-zero exit for Task Scheduler error detection
         raise
 
 if __name__ == "__main__":
     main()
+
