@@ -32,6 +32,7 @@ jobs:
 
       - name: Run Food Planner
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}

@@ -56,6 +56,7 @@ if AUTO_MODE:
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=[
             logging.FileHandler(_log_filename, encoding='utf-8'),
+            logging.StreamHandler(sys.stdout)
         ]
     )
     # Also write a symlink-like "latest" log for easy access
