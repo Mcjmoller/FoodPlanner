@@ -185,9 +185,12 @@ def _hydrate_plan(row):
 
 
 def get_latest_plan():
+    # Tie-break on id: time.time() is only ~15ms granular on Windows, so two
+    # plans saved in the same tick share a created_at and "latest" would
+    # otherwise be whichever row SQLite happened to return first.
     with connect() as conn:
-        return _hydrate_plan(
-            conn.execute("SELECT * FROM plans ORDER BY created_at DESC LIMIT 1").fetchone())
+        return _hydrate_plan(conn.execute(
+            "SELECT * FROM plans ORDER BY created_at DESC, id DESC LIMIT 1").fetchone())
 
 
 def get_plan(plan_id):
@@ -200,7 +203,7 @@ def list_plans(limit=20):
     with connect() as conn:
         rows = conn.execute(
             "SELECT id, created_at, savings, source FROM plans "
-            "ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+            "ORDER BY created_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
     return [{**dict(r), "created": datetime.fromtimestamp(r["created_at"])} for r in rows]
 
 
@@ -226,7 +229,7 @@ def finish_run(run_id, status, deals_found=0, detail=None):
 def list_runs(limit=10):
     with connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM runs ORDER BY started_at DESC LIMIT ?", (limit,)).fetchall()
+            "SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
     out = []
     for r in rows:
         run = dict(r)

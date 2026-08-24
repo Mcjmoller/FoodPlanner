@@ -106,6 +106,18 @@ class TestPlans(StoreTestCase):
         store.save_plan([], [], 2.0, "gemini")
         self.assertEqual(store.get_latest_plan()["savings"], 2.0)
 
+    def test_latest_plan_breaks_created_at_ties_by_insertion_order(self):
+        # time.time() is ~15ms granular on Windows, so back-to-back saves can
+        # share a created_at. Insertion order must still decide which is latest.
+        now = 1700000000.0
+        with store.connect() as conn:
+            for savings in (1.0, 2.0, 3.0):
+                conn.execute(
+                    "INSERT INTO plans (created_at, schedule, shopping, savings, source) "
+                    "VALUES (?, '[]', '[]', ?, 'test')", (now, savings))
+        self.assertEqual(store.get_latest_plan()["savings"], 3.0)
+        self.assertEqual([p["savings"] for p in store.list_plans()], [3.0, 2.0, 1.0])
+
     def test_no_plans_yet(self):
         self.assertIsNone(store.get_latest_plan())
 
