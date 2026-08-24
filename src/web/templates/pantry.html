@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Spisekammer &middot; FoodPlanner{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Spisekammer</h1>
+    <p class="subtitle">Hvad du allerede har hjemme. Tr&aelig;kkes fra indk&oslash;bslisten inden der k&oslash;bes ind.</p>
+  </div>
+</div>
+
+<div class="card" style="max-width:720px">
+  <div class="card-body">
+    <form method="post" action="/pantry/add" class="form-row">
+      <input class="grow" type="text" name="name" placeholder="Vare, fx &quot;Æg&quot;" required>
+      <input type="text" name="qty" placeholder="Antal" style="width:92px" inputmode="decimal">
+      <input type="text" name="unit" placeholder="stk" style="width:80px" value="stk">
+      <button class="btn btn-primary" type="submit">Tilf&oslash;j</button>
+    </form>
+    <div class="run-note">Uden antal regnes varen som &quot;har lidt&quot; &mdash; der tr&aelig;kkes intet fra.</div>
+  </div>
+</div>
+
+<div class="card" style="max-width:720px; margin-top:18px">
+  <div class="card-head">
+    <div class="card-title">Varer</div>
+    <span class="tiny muted">{{ items|length }}</span>
+  </div>
+  <div class="card-body flush">
+    {% for item in items %}
+    <div class="row">
+      <div class="row-main">
+        <div class="row-name">{{ item.name }}</div>
+        <div class="row-sub">
+          {% if item.qty %}{{ item.qty|round(1)|int if item.qty == item.qty|round(0) else item.qty }} {{ item.unit or "stk" }}{% else %}uden antal{% endif %}
+        </div>
+      </div>
+      <form method="post" action="/pantry/{{ item.id }}/delete" class="inline-form">
+        <button class="btn btn-sm btn-icon" type="submit" title="Fjern" aria-label="Fjern">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+               stroke-width="1.9" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </form>
+    </div>
+    {% else %}
+    <div class="empty">Spisekammeret er tomt.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

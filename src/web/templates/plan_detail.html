@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Madplan {{ plan.created.strftime("%d/%m") }} &middot; FoodPlanner{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Madplan {{ plan.created.strftime("%d/%m/%Y") }}</h1>
+    <p class="subtitle">
+      <span class="badge {{ 'ok' if plan.source == 'gemini' }}">{{ plan.source }}</span>
+      &middot; {{ "%.0f"|format(plan.savings) }} kr sparet
+    </p>
+  </div>
+  <a class="btn" href="/plans">Tilbage</a>
+</div>
+
+<div class="grid grid-2">
+  <div class="card">
+    <div class="card-head"><div class="card-title">Madplan</div></div>
+    <div class="card-body flush">
+      {% for day in plan.schedule %}
+      <div class="day">
+        <div class="day-name">{{ day.day_name }}</div>
+        <div class="day-meal">
+          <span class="tag tag-{{ day.type }}">
+            {% if day.type == 'cook' %}Lav mad{% elif day.type == 'leftover' %}Rester{% else %}Fleksibel{% endif %}
+          </span>
+          {{ day.meal_name }}
+          {% if day.ingredients %}<div class="day-ings">{{ day.ingredients|join(", ") }}</div>{% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head"><div class="card-title">Indk&oslash;bsliste</div></div>
+    <div class="card-body flush">
+      {% for shop, items in plan.grouped.items() %}
+      <div class="store-group">
+        <div class="store-head">
+          <span>{{ shop }}</span>
+          <span>{{ "%.0f"|format(items|sum(attribute='price')) }} kr</span>
+        </div>
+        {% for item in items %}
+        <div class="row">
+          <div class="row-main">
+            <div class="row-name">{{ item.name }}{% if item.buy_qty and item.buy_qty > 1 %}<span class="qty">&times;{{ item.buy_qty }}</span>{% endif %}</div>
+            <div class="row-sub">{{ item.total_needed }}{% if item.found_name %} &middot; {{ item.found_name }}{% endif %}</div>
+          </div>
+          <div class="row-price {{ 'none' if not item.price }}">
+            {% if item.price %}{{ "%.0f"|format(item.price) }} kr{% else %}&ndash;{% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

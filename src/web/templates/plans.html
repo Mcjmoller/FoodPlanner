@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Historik &middot; FoodPlanner{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Historik</h1>
+    <p class="subtitle">Tidligere madplaner, nyeste f&oslash;rst.</p>
+  </div>
+</div>
+
+<div class="card" style="max-width:760px">
+  <div class="card-body flush">
+    {% for plan in plans %}
+    <a class="row" href="/plans/{{ plan.id }}">
+      <div class="row-main">
+        <div class="row-name">{{ plan.created.strftime("%d/%m/%Y %H:%M") }}</div>
+        <div class="row-sub"><span class="badge {{ 'ok' if plan.source == 'gemini' }}">{{ plan.source }}</span></div>
+      </div>
+      <div class="row-price">{{ "%.0f"|format(plan.savings) }} kr sparet</div>
+    </a>
+    {% else %}
+    <div class="empty">Ingen planer gemt endnu.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

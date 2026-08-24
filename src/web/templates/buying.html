@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Indk&oslash;bsliste &middot; FoodPlanner{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Indk&oslash;bsliste</h1>
+    <p class="subtitle">Faste varer du vil have med, ud over det madplanen kr&aelig;ver.</p>
+  </div>
+</div>
+
+<div class="card" style="max-width:640px">
+  <div class="card-body">
+    <form method="post" action="/buying/add" class="form-row">
+      <input class="grow" type="text" name="name" placeholder="Tilf&oslash;j vare, fx &quot;Kaffe&quot;" required>
+      <button class="btn btn-primary" type="submit">Tilf&oslash;j</button>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="max-width:640px; margin-top:18px">
+  <div class="card-head">
+    <div class="card-title">Varer</div>
+    <span class="tiny muted">{{ items|selectattr("done", "equalto", 0)|list|length }} aktive</span>
+  </div>
+  <div class="card-body flush">
+    {% for item in items %}
+    <div class="row {{ 'done' if item.done }}">
+      <form method="post" action="/buying/{{ item.id }}/toggle" class="inline-form">
+        <button class="btn btn-sm btn-icon" type="submit" title="Skift status" aria-label="Skift status">
+          {% if item.done %}
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 6L9 17l-5-5"/></svg>
+          {% else %}
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+               stroke-width="1.7"><rect x="4" y="4" width="16" height="16" rx="4"/></svg>
+          {% endif %}
+        </button>
+      </form>
+      <div class="row-main"><div class="row-name">{{ item.name }}</div></div>
+      <form method="post" action="/buying/{{ item.id }}/delete" class="inline-form">
+        <button class="btn btn-sm btn-icon" type="submit" title="Fjern" aria-label="Fjern">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+               stroke-width="1.9" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </form>
+    </div>
+    {% else %}
+    <div class="empty">Listen er tom.</div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

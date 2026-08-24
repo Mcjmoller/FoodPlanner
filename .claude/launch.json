@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "foodplanner-web",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "web.app:app", "--app-dir", "src", "--port", "8100", "--reload"],
+      "port": 8100
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Tilbud &middot; FoodPlanner{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Tilbud</h1>
+    <p class="subtitle">{{ total }} tilbud fra cachen, billigste f&oslash;rst.</p>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:18px">
+  <div class="card-body">
+    <form method="get" action="/deals" class="form-row">
+      <input class="grow" type="search" name="q" value="{{ q }}" placeholder="S&oslash;g, fx &quot;kylling&quot;">
+      <select name="shop">
+        <option value="">Alle butikker</option>
+        {% for s in stores %}
+        <option value="{{ s }}" {{ "selected" if shop == s }}>{{ s }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn" type="submit">Filtrer</button>
+      {% if q or shop %}<a class="btn" href="/deals">Nulstil</a>{% endif %}
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-body flush">
+    {% for deal in deals %}
+    <div class="row">
+      <div class="row-main">
+        <div class="row-name">{{ deal.item }}</div>
+        <div class="row-sub">
+          {{ deal.store }}
+          {%- if deal.unit_size and deal.unit_type %} &middot; {{ "%g"|format(deal.unit_size) }} {{ deal.unit_type }}{% endif %}
+        </div>
+      </div>
+      <div class="row-price">{{ "%.2f"|format(deal.price) }} kr</div>
+    </div>
+    {% else %}
+    <div class="empty">
+      Ingen tilbud matcher.
+      {% if not q and not shop %}<br>K&oslash;r &quot;Hent nye tilbud&quot; p&aring; forsiden f&oslash;rst.{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% if total > deals|length %}
+<p class="tiny muted right" style="margin-top:10px">Viser {{ deals|length }} af {{ total }}.</p>
+{% endif %}
+{% endblock %}

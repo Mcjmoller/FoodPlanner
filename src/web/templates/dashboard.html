@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}Madplan &middot; FoodPlanner{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Ugens madplan</h1>
+    <p class="subtitle">
+      {% if plan %}
+        Genereret {{ plan.created.strftime("%d/%m %H:%M") }}
+        &middot; <span class="badge {{ 'ok' if plan.source == 'gemini' }}">{{ plan.source }}</span>
+      {% else %}
+        Ingen plan endnu &mdash; k&oslash;r motoren for at komme i gang.
+      {% endif %}
+    </p>
+  </div>
+  <div class="form-row">
+    <form method="post" action="/run" class="inline-form">
+      <button class="btn" type="submit">Generer igen</button>
+    </form>
+    <form method="post" action="/run" class="inline-form" data-slow>
+      <input type="hidden" name="refresh" value="1">
+      <button class="btn btn-primary" type="submit">Hent nye tilbud</button>
+    </form>
+  </div>
+</div>
+
+{% if stats %}
+<div class="stats">
+  <div class="stat">
+    <div class="stat-label">Varer</div>
+    <div class="stat-value">{{ stats.count }}</div>
+    <div class="stat-sub">p&aring; listen</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Matchet tilbud</div>
+    <div class="stat-value">{{ stats.matched }}<span class="muted" style="font-size:16px">/{{ stats.count }}</span></div>
+    <div class="stat-sub">resten til normalpris</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Kurv i alt</div>
+    <div class="stat-value">{{ "%.0f"|format(stats.total) }}<span class="muted" style="font-size:15px"> kr</span></div>
+    <div class="stat-sub">kun matchede varer</div>
+  </div>
+  <div class="stat">
+    <div class="stat-label">Sparet</div>
+    <div class="stat-value accent">{{ "%.0f"|format(stats.savings) }}<span style="font-size:15px"> kr</span></div>
+    <div class="stat-sub">billigste vs. dyreste butik</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="grid grid-2">
+
+  <div class="card">
+    <div class="card-head"><div class="card-title">Madplan</div></div>
+    <div class="card-body flush">
+      {% if plan %}
+        {% for day in plan.schedule %}
+        <div class="day">
+          <div class="day-name">{{ day.day_name }}</div>
+          <div class="day-meal">
+            <span class="tag tag-{{ day.type }}">
+              {% if day.type == 'cook' %}Lav mad{% elif day.type == 'leftover' %}Rester{% else %}Fleksibel{% endif %}
+            </span>
+            {{ day.meal_name }}
+            {% if day.ingredients %}
+              <div class="day-ings">{{ day.ingredients|join(", ") }}</div>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty">Ingen madplan endnu.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">Indk&oslash;bsliste</div>
+      {% if plan %}<span class="tiny muted">{{ plan.shopping|length }} varer</span>{% endif %}
+    </div>
+    <div class="card-body flush">
+      {% if plan and plan.grouped %}
+        {% for shop, items in plan.grouped.items() %}
+        <div class="store-group">
+          <div class="store-head">
+            <span>{{ shop }}</span>
+            <span>{{ "%.0f"|format(items|sum(attribute='price')) }} kr</span>
+          </div>
+          {% for item in items %}
+          <div class="row">
+            <div class="row-main">
+              <div class="row-name">
+                {{ item.name }}{% if item.buy_qty and item.buy_qty > 1 %}<span class="qty">&times;{{ item.buy_qty }}</span>{% endif %}
+              </div>
+              <div class="row-sub">
+                {{ item.total_needed }}{% if item.found_name %} &middot; {{ item.found_name }}{% endif %}
+              </div>
+            </div>
+            <div class="row-price {{ 'none' if not item.price }}">
+              {% if item.price %}{{ "%.0f"|format(item.price) }} kr{% else %}&ndash;{% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      {% else %}
+        <div class="empty">Ingen indk&oslash;bsliste endnu.</div>
+      {% endif %}
+    </div>
+  </div>
+
+</div>
+
+{% if runs %}
+<div class="card" style="margin-top:18px">
+  <div class="card-head"><div class="card-title">Seneste k&oslash;rsler</div></div>
+  <div class="card-body flush">
+    {% for run in runs %}
+    <div class="row">
+      <div class="row-main">
+        <div class="row-name">
+          <span class="badge {{ 'ok' if run.status == 'ok' else 'fail' }}">{{ run.status }}</span>
+          <span class="tiny muted" style="margin-left:8px">{{ run.detail or "" }}</span>
+        </div>
+        <div class="row-sub">{{ run.started.strftime("%d/%m %H:%M") }}
+          {%- if run.duration %} &middot; {{ "%.1f"|format(run.duration) }}s{% endif %}
+          {%- if run.deals_found %} &middot; {{ run.deals_found }} tilbud{% endif %}</div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+{% endblock %}
