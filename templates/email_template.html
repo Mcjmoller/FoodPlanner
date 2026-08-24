@@ -68,7 +68,7 @@
         <tr>
             <td style="padding: 8px 30px 8px 30px;">
                 <div style="font-size: 15px; font-weight: 700; color: #2d3436; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 14px; border-left: 3px solid #00b894; padding-left: 10px;">
-                    Indkobsliste
+                    Indk&oslash;bsliste
                 </div>
             </td>
         </tr>
@@ -111,6 +111,22 @@
                 </td>
             </tr>
             {% endfor %}
+        {% endif %}
+
+        {% if total_savings and total_savings > 0 %}
+        <!-- SAVINGS -->
+        <tr>
+            <td style="padding: 0 30px 8px 30px;">
+                <div style="background-color: #e8f8f3; border: 1px solid #00b894; border-radius: 8px; padding: 12px 16px; text-align: center;">
+                    <span style="font-size: 14px; font-weight: 700; color: #00b894;">
+                        Sparet {{ "%.0f"|format(total_savings) }} kr
+                    </span>
+                    <span style="font-size: 12px; color: #636e72;">
+                        ved at v&aelig;lge billigste butik frem for dyreste
+                    </span>
+                </div>
+            </td>
+        </tr>
         {% endif %}
 
         <!-- FOOTER -->

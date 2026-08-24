@@ -21,17 +21,22 @@ from io import StringIO
 import gspread
 from google.oauth2.service_account import Credentials
 from playwright.sync_api import sync_playwright
+from playwright.sync_api import Error as PlaywrightError
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from dotenv import load_dotenv
 from jinja2 import Template
 from google import genai
 from google.genai import types as genai_types
-from google.api_core import exceptions as api_exceptions
 
 # FUZZY LOGIC LIBRARIES
 from thefuzz import fuzz, process
 
+import store
+
+import logging
+
 # --- CLI ARGUMENT PARSING ---
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="Food Planner - Automated Meal Planning")
     parser.add_argument(
         "--cron", "--auto",
@@ -39,46 +44,45 @@ def parse_args():
         dest="auto_mode",
         help="Run in headless automation mode (no prompts, log to file)"
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
-CLI_ARGS = parse_args()
-AUTO_MODE = CLI_ARGS.auto_mode
 
-# --- LOGGING SETUP ---
-import logging
-
-if AUTO_MODE:
-    # Redirect all logs to a timestamped file for automation
-    _log_filename = f"automation_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.FileHandler(_log_filename, encoding='utf-8'),
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
-    # Also write a symlink-like "latest" log for easy access
-    _latest_log = "automation_log.txt"
-    if os.path.exists(_latest_log):
-        os.remove(_latest_log)
-    try:
-        # Copy path reference for Windows compatibility
-        import shutil
-        # We'll append to this later; for now just note the filename
-        with open(_latest_log, 'w', encoding='utf-8') as f:
-            f.write(f"Latest log: {_log_filename}\n")
-    except Exception:
-        pass
-else:
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(message)s',
-        datefmt='%H:%M'
-    )
+# Importing this module must NOT consume sys.argv - a test runner passes its own
+# flags, and parsing them here made `pytest src/` fail at collection. The command
+# line is read only in the __main__ block; CI sets the env var instead.
+AUTO_MODE = os.environ.get("FOODPLANNER_AUTOMATED") == "1"
 
 logger = logging.getLogger("FoodPlanner")
+
+
+def configure_logging(auto_mode):
+    """Sets up log handlers. Called from the entry point, never at import time."""
+    if auto_mode:
+        # Redirect all logs to a timestamped file for automation
+        log_filename = f"automation_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+            handlers=[
+                logging.FileHandler(log_filename, encoding='utf-8'),
+                logging.StreamHandler(sys.stdout)
+            ],
+            force=True,
+        )
+        # Pointer file so the newest run is easy to find without listing the directory
+        try:
+            with open("automation_log.txt", 'w', encoding='utf-8') as f:
+                f.write(f"Latest log: {log_filename}\n")
+        except OSError:
+            pass
+    else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(message)s',
+            datefmt='%H:%M',
+            force=True,
+        )
 
 
 # --- DIRECTORIES ---
@@ -101,7 +105,9 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
-SPREADSHEET_NAME = "Food Planner"
+# README documents this as configurable; it used to be hardcoded, so the .env
+# value was silently ignored. The old literal stays as the default.
+SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME", "Food Planner")
 
 # --- EMAIL CONFIG ---
 EMAIL_ADDRESS = os.environ.get("EMAIL_ADDRESS")
@@ -415,16 +421,19 @@ INGREDIENT_TRAP_LIST = {
     "fiskefars": ["fiskepinde", "fish sticks", "paneret", "færdigret"],
     "mælk": ["kakaomælk", "kokosmælk", "mandelmælk", "rismælk", "soyamælk",
              "kærnemælk", "havremælk", "milkshake", "proteindrik", "chokolade"],
-    "æg": ["pålæg", "chokoladeæg", "påskeæg", "spejlæg"],
+    # Short terms collide with Danish words that merely END in them. These traps
+    # are what stop "æg" reading "ungkvæg", "ris" reading "Frilandsgris" or
+    # "Literpris", and "ost" reading "Æblemost".
+    "æg": ["pålæg", "chokoladeæg", "påskeæg", "spejlæg", "kvæg"],
     "smør": ["smørbar", "peanutbutter", "jordnøddesmør"],
     "mel": ["melis", "melon", "melange"],
     "bønner": ["kaffebønner", "jelly beans"],
     "is": ["metropolis", "basis", "chips", "disse", "fisk", "frisk", "gris",
            "hvis", "linser", "maj", "melis", "pris", "pisk", "ris",
            "spidskål", "viskestykker"],
-    "ost": ["ostemad", "ostepop", "cheez", "ostesovs"],
+    "ost": ["ostemad", "ostepop", "cheez", "ostesovs", "most", "frost", "kost", "post"],
     "pasta": ["pastasovs", "færdigret"],
-    "ris": ["risifrutti", "risdrik", "risengrød"],
+    "ris": ["risifrutti", "risdrik", "risengrød", "gris", "pris", "friste"],
     "kartofler": ["kartoffelchips", "chips", "pommes", "fritter"],
     "rejer": ["rejemad", "rejesalat", "færdigret"],
     "laks": ["laksepaté", "laksemousse", "færdigret", "røget laks"],
@@ -458,14 +467,23 @@ def is_match(search_term, deal_item):
 
     if trap_words:
         for bad_word in trap_words:
+            # A trap word contained in the search term is self-defeating: the term is
+            # the more specific ingredient. "kokosmælk" inherits mælk's trap list, which
+            # lists "kokosmælk"; "risnudler" inherits is's list, which lists "ris".
+            # Without this guard those ingredients can never match any deal.
+            if bad_word in term:
+                continue
             if bad_word in item:
                 return False
 
     # --- STEP 2: PROCESSED PRODUCT FILTER ---
     # If the search term looks like a raw ingredient (single common word),
     # reject any deal that is clearly a processed product.
-    if is_processed_product(item):
-        return False
+    # Skipped when the term IS the processed product: a recipe asking for "pølser"
+    # wants sausages, so "pølse" must not filter them out.
+    if not any(marker in term for marker in PROCESSED_MARKERS):
+        if is_processed_product(item):
+            return False
 
     # --- STEP 3: MULTI-WORD EXACT PHRASE ---
     # If search term has multiple words (e.g. "Hakket Kylling"),
@@ -490,7 +508,15 @@ def is_match(search_term, deal_item):
         if term == "is":
             padded = f" {item} "
             return f" {term} " in padded or padded.startswith(f" {term} ") or padded.endswith(f" {term} ")
-        return term in item
+        # A bare substring test matches mid-word noise: "ris" hit "Fristelser",
+        # putting a bag of sweets on the shopping list as rice.
+        # Danish compounds are still honoured ("jasminris", "skrabeaeg"), but a
+        # compound has to be meaningfully longer than the term itself - otherwise
+        # "pris" (price), which ends every offer line, reads as "ris".
+        return any(
+            w == term or (len(w) >= len(term) + 3 and (w.startswith(term) or w.endswith(term)))
+            for w in re.split(r"[\s\-/]+", item)
+        )
     else:
         # LONG WORDS: Substring first
         if term in item:
@@ -559,6 +585,18 @@ def is_price_plausible(search_term, deal):
     
     return lower_bound <= price_per_kg <= upper_bound
 
+def find_matching_deals(item_name, all_deals):
+    """
+    Returns every deal that passes NLP matching and the price plausibility check.
+    Keeping the full set (rather than only the winner) lets callers measure the
+    real spread between the cheapest and dearest offer for the same ingredient.
+    """
+    return [
+        deal for deal in all_deals
+        if is_match(item_name, deal['item']) and is_price_plausible(item_name, deal)
+    ]
+
+
 def find_cheapest_deal(item_name, all_deals, threshold=MATCH_THRESHOLD):
     """
     Finds the best deal using:
@@ -566,24 +604,8 @@ def find_cheapest_deal(item_name, all_deals, threshold=MATCH_THRESHOLD):
     2. Price plausibility check.
     3. Price minimization among valid matches.
     """
-    best_deal = None
-    min_price = float('inf')
-
-    for deal in all_deals:
-        # Step 1: NLP Match
-        if not is_match(item_name, deal['item']):
-            continue
-
-        # Step 2: Price Plausibility
-        if not is_price_plausible(item_name, deal):
-            continue
-
-        # Step 3: Price Minimization
-        if deal['price'] < min_price:
-            min_price = deal['price']
-            best_deal = deal
-
-    return best_deal
+    matches = find_matching_deals(item_name, all_deals)
+    return min(matches, key=lambda d: d['price']) if matches else None
 
 # ============================================================
 #  MEAL PLANNING LOGIC
@@ -752,14 +774,18 @@ def call_gemini_with_retry(client, prompt, response_mime_type=None):
             logger.info("[SUCCESS] Gemini response received.")
             return response.text
 
-        except api_exceptions.NotFound as e:
-            logger.critical(f"[ERROR] Model '{GEMINI_MODEL}' not found. Please check model naming conventions.")
-            logger.critical("Stopping execution to prevent useless retries.")
-            sys.exit(1)
-
         except Exception as e:
             error_str = str(e).lower()
             last_exception = e
+
+            # --- 404: Model Not Found ---
+            # google-genai raises its own errors.ClientError, which does NOT inherit
+            # from google.api_core.exceptions.NotFound - catching that class here was
+            # dead code. Match on the status instead, before the generic branches.
+            if "404" in str(e) or "not_found" in error_str or "not found" in error_str:
+                logger.critical(f"[ERROR] Model '{GEMINI_MODEL}' not found. Please check model naming conventions.")
+                logger.critical("Stopping execution to prevent useless retries.")
+                sys.exit(1)
 
             # --- 429: Resource Exhausted (Rate Limit) ---
             if "429" in str(e) or "resource exhausted" in error_str or "rate" in error_str:
@@ -799,6 +825,45 @@ def call_gemini_with_retry(client, prompt, response_mime_type=None):
 #  AI MEAL PLAN GENERATOR
 # ============================================================
 
+def build_deals_summary(all_deals, max_deals=400):
+    """
+    Formats parsed deals into a compact priced list for the Gemini prompt.
+
+    Previously the prompt was fed raw scraped page text truncated to 3000 chars,
+    which meant the model saw navigation noise instead of prices, and the last
+    stores in the list never reached it at all. Structured deals are ~40 chars
+    each, so the whole week's catalogue fits.
+    """
+    if not all_deals:
+        return "No deals available."
+
+    # Dedupe: the same offer often appears several times on one page.
+    seen = set()
+    by_store = {}
+    for deal in all_deals:
+        key = (deal["store"], deal["item"].lower(), deal["price"])
+        if key in seen:
+            continue
+        seen.add(key)
+        by_store.setdefault(deal["store"], []).append(deal)
+
+    lines = []
+    remaining = max_deals
+    for store, deals in by_store.items():
+        if remaining <= 0:
+            break
+        # Cheapest first: if we do hit the cap, keep the offers worth planning around.
+        deals.sort(key=lambda d: d["price"])
+        chunk = deals[:remaining]
+        remaining -= len(chunk)
+        lines.append(f"--- {store} ---")
+        for d in chunk:
+            size = f" ({d['unit_size']:g} {d['unit_type']})" if d.get("unit_size") else ""
+            lines.append(f"{d['item']} - {d['price']:.2f} kr{size}")
+
+    return "\n".join(lines)
+
+
 def generate_ai_meal_plan(client, templates, deals_summary, pantry):
     """
     Uses Gemini 3.0 Flash to generate an optimized weekly meal plan.
@@ -825,8 +890,8 @@ Rules:
 Available meal templates:
 {template_info}
 
-Current store deals summary (cleaned):
-{deals_summary[:3000]}
+Current store deals (item - price - pack size). Prefer meals whose ingredients appear here:
+{deals_summary}
 
 Pantry items already available:
 {json.dumps(pantry, ensure_ascii=False)}
@@ -1028,22 +1093,15 @@ def generate_shopping_list(buying_list, schedule, all_deals, pantry_list):
         needed_amt = data["amount"]
         unit = data["unit"]
         
-        # --- PANTRY CHECK ---
-        # Heuristic: Check if any pantry item string contains the ingredient name
-        # And try to parse a number from it?
-        # Example pantry item: "Æg 4 stk"
-        # We search through the pantry list passed to this function?
-        # Wait, generate_shopping_list signature doesn't have pantry list.
-        # I need to pass pantry list to this function.
-        # Replacing signature to include pantry.
-        
-        # Skipping pantry logic detail here because I cant change signature easily in this text block 
-        # without changing the caller in main().
-        # I will assume `schedule` step already filtered? No.
-        # I will change signature below.
-        
-        best_deal = find_cheapest_deal(name, all_deals)
-        
+        # Pantry deduction already happened in step 2 above, against pantry_list.
+        # Anything the pantry fully covers is not shopping - drop it rather than
+        # printing "0.0 stk" next to a deal you are not meant to buy.
+        if needed_amt <= 0:
+            continue
+
+        matches = find_matching_deals(name, all_deals)
+        best_deal = min(matches, key=lambda d: d['price']) if matches else None
+
         entry = {
             "name": name,
             "total_needed": f"{needed_amt:.1f} {unit}",
@@ -1091,8 +1149,23 @@ def generate_shopping_list(buying_list, schedule, all_deals, pantry_list):
             entry["found_name"] = best_deal['item']
             entry["store"] = best_deal['store']
             entry["pack_size"] = f"{best_deal.get('unit_size')} {best_deal.get('unit_type')}"
-            
-            total_savings += (best_deal['price'] * 0.2) * packs_to_buy
+
+            # Real, measurable saving: what this ingredient would have cost at the
+            # dearest LIKE-FOR-LIKE offer, minus what it costs at the one we picked.
+            # (The previous version assumed a flat 20% discount, which was invented -
+            # no pre-discount price is ever scraped, so it could not be derived.)
+            #
+            # Only near-identical product names count. Fuzzy matching happily groups
+            # "Jasminris" with "Risotto Arborio", and treating that gap as a saving
+            # produced totals larger than the whole basket.
+            comparable = [
+                d for d in matches
+                if d['store'] != best_deal['store']
+                and fuzz.token_sort_ratio(d['item'].lower(), best_deal['item'].lower()) >= 80
+            ]
+            if comparable:
+                dearest = max(comparable, key=lambda d: d['price'])
+                total_savings += max(0.0, dearest['price'] - best_deal['price']) * packs_to_buy
         else:
             entry["store"] = "General/Other"
             entry["buy_qty"] = 1 # estimation
@@ -1121,8 +1194,10 @@ def save_to_sheets(schedule, shopping_list):
         sh = gc.open(SPREADSHEET_NAME)
         
         # 1. Meal Plan
-        try: ws = sh.worksheet("MealPlan")
-        except: ws = sh.add_worksheet("MealPlan", 100, 10)
+        try:
+            ws = sh.worksheet("MealPlan")
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet("MealPlan", 100, 10)
         ws.clear()
         
         headers = ["Day", "Meal", "Ingredients"]
@@ -1130,8 +1205,10 @@ def save_to_sheets(schedule, shopping_list):
         ws.update(range_name="A1", values=[headers] + rows)
         
         # 2. Shopping List
-        try: ws_shop = sh.worksheet("ShoppingList")
-        except: ws_shop = sh.add_worksheet("ShoppingList", 100, 10)
+        try:
+            ws_shop = sh.worksheet("ShoppingList")
+        except gspread.WorksheetNotFound:
+            ws_shop = sh.add_worksheet("ShoppingList", 100, 10)
         ws_shop.clear()
         
         headers_shop = ["Item", "Qty", "Price", "Store", "Found Match"]
@@ -1187,35 +1264,37 @@ def scrape_deals_raw(store, url):
     """Playwright Scraper (Raw Text)"""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(url)
-        try: 
-            # Hardening for specifically 365 Discount or others that load slow
-            if "365" in store.lower():
-                page.wait_for_load_state("domcontentloaded")
-                # Confirm render by waiting for common product selectors
-                try:
-                    page.wait_for_selector("article, .product, .item, .tile", timeout=7000)
-                except:
-                    logger.warning(f"[WARNING] {store}: Render confirmation selector not found, proceeding...")
-            
-            page.wait_for_load_state("networkidle", timeout=10000)
-            
-            # Simple Cookie Clicker
+        try:
+            page = browser.new_page()
+            page.goto(url)
             try:
-                btn = page.locator("button, a").filter(has_text=re.compile(r"accepter|tillad|ok|godkend|yes|ja|luk|accept", re.IGNORECASE)).first
-                if btn.count() > 0:
-                    btn.click(timeout=1000)
-                    page.wait_for_timeout(1000)
-            except:
-                pass
-                
-        except: 
-            pass
-        
-        text = page.inner_text("body")
-        browser.close()
-        return text
+                # Hardening for specifically 365 Discount or others that load slow
+                if "365" in store.lower():
+                    page.wait_for_load_state("domcontentloaded")
+                    # Confirm render by waiting for common product selectors
+                    try:
+                        page.wait_for_selector("article, .product, .item, .tile", timeout=7000)
+                    except PlaywrightTimeout:
+                        logger.warning(f"[WARNING] {store}: Render confirmation selector not found, proceeding...")
+
+                page.wait_for_load_state("networkidle", timeout=10000)
+
+                # Simple Cookie Clicker
+                try:
+                    btn = page.locator("button, a").filter(has_text=re.compile(r"accepter|tillad|ok|godkend|yes|ja|luk|accept", re.IGNORECASE)).first
+                    if btn.count() > 0:
+                        btn.click(timeout=1000)
+                        page.wait_for_timeout(1000)
+                except PlaywrightError as e:
+                    logger.debug(f"[DEBUG] {store}: no cookie banner handled ({e})")
+
+            except PlaywrightError as e:
+                # Page may still hold usable text even if a wait timed out, so read on.
+                logger.warning(f"[WARNING] {store}: page did not settle ({type(e).__name__}), reading anyway.")
+
+            return page.inner_text("body")
+        finally:
+            browser.close()
 
 def load_lists_from_sheets():
     fallback_file = os.path.join(DATA_DIR, "pantry_buying_fallback.json")
@@ -1252,6 +1331,113 @@ def is_automated_run():
     """Detect if running via Task Scheduler/Cron (legacy env var or --auto flag)."""
     return AUTO_MODE or os.environ.get("FOODPLANNER_AUTOMATED") == "1"
 
+
+# ============================================================
+#  REUSABLE PIPELINE STAGES
+#  Split out of main() so the web app can generate a plan without
+#  also writing to Sheets or sending mail.
+# ============================================================
+
+def collect_deals(force_refresh=False):
+    """Scrapes (or reads from cache) every configured store. Returns parsed deals."""
+    all_deals = []
+    for store_name, url in STORES.items():
+        try:
+            raw_text = None if force_refresh else get_cached_raw_text(store_name)
+            if not raw_text:
+                logger.info(f"  Scraping fresh deals for {store_name} via Playwright...")
+                raw_text = scrape_deals_raw(store_name, url)
+                if raw_text:
+                    set_cached_raw_text(store_name, raw_text)
+            else:
+                logger.info(f"  Using cached deals for {store_name}.")
+
+            if raw_text:
+                # NB: parse line-by-line on the raw text. strip_html_js collapses
+                # newlines, which would flatten every deal into a single line.
+                structured = parse_scraped_text(raw_text, store_name)
+                if not structured:
+                    logger.warning(f"[WARNING] No deals found for {store_name}.")
+                all_deals.extend(structured)
+            else:
+                logger.warning(f"[WARNING] Could not retrieve raw text for {store_name}.")
+        except Exception as e:
+            logger.error(f"[ERROR] Failed to process {store_name}: {e}")
+    return all_deals
+
+
+def cached_deals(ignore_expiry=True):
+    """
+    Reads parsed deals straight from the cache without ever launching a browser.
+    The web app uses this so page loads stay instant; only an explicit refresh
+    is allowed to scrape. By default expiry is ignored - showing last week's
+    prices beats showing an empty page.
+    """
+    conn = get_db_connection()
+    try:
+        rows = conn.execute(
+            "SELECT store_name, raw_text, timestamp FROM store_deals_cache").fetchall()
+    finally:
+        conn.close()
+
+    deals = []
+    for store_name, raw_text, ts in rows:
+        if not raw_text:
+            continue
+        if not ignore_expiry and time.time() - ts >= CACHE_EXPIRY_SECONDS:
+            continue
+        deals.extend(parse_scraped_text(raw_text, store_name))
+    return deals
+
+
+def build_schedule(templates, pantry, all_deals, gemini_client=None):
+    """
+    Returns (schedule, source). Tries Gemini when a client is supplied and falls
+    back to the deterministic scorer on any failure, so the app still produces a
+    plan with no API key configured.
+    """
+    if gemini_client is not None:
+        try:
+            ai_plan = generate_ai_meal_plan(
+                gemini_client, templates, build_deals_summary(all_deals), pantry)
+            if ai_plan and "meal_plan" in ai_plan:
+                logger.info("[INFO] Using AI-generated meal plan.")
+                return [
+                    {
+                        "day_name": d.get("day", "Unknown"),
+                        "type": d.get("type", "flexible"),
+                        "meal_name": d.get("meal_name", "Flexible"),
+                        "portions": d.get("portions", 0),
+                        "ingredients": d.get("ingredients", []),
+                    }
+                    for d in ai_plan["meal_plan"]
+                ], "gemini"
+        except Exception as e:
+            logger.warning(f"[WARNING] AI meal plan failed, using rule-based fallback: {e}")
+
+    logger.info("[INFO] Using rule-based meal plan (fallback).")
+    return generate_weekly_plan(templates, pantry, all_deals), "rule-based"
+
+
+def generate_plan(buying, pantry, all_deals, gemini_client=None):
+    """Full plan generation with no side effects. Returns a result dict."""
+    templates = load_meal_templates()
+    schedule, source = build_schedule(templates, pantry, all_deals, gemini_client)
+    grouped, flat, savings = generate_shopping_list(buying, schedule, all_deals, pantry)
+    return {
+        "schedule": schedule,
+        "grouped": grouped,
+        "flat": flat,
+        "savings": savings,
+        "source": source,
+        "deals_found": len(all_deals),
+    }
+
+
+def make_gemini_client(api_key):
+    """Gemini needs the v1beta endpoint for preview models."""
+    return genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
+
 def main():
     logger.info("============================================================")
     logger.info("  FOOD PLANNER: HYBRID ENGINE (Rule-Based + Gemini 3 Flash)")
@@ -1269,90 +1455,38 @@ def main():
         logger.info("Verifying credentials...")
         api_key = verify_credentials()
         
-        # Initialize Gemini client
-        # Use v1beta for preview models
-        gemini_client = genai.Client(api_key=api_key, http_options={'api_version': 'v1beta'})
+        gemini_client = make_gemini_client(api_key)
         logger.info(f"[SUCCESS] Gemini client initialized (model: {GEMINI_MODEL})")
-        
+
         # ── STEP 1: Load Data ──
         logger.info("Loading templates & lists...")
-        templates = load_meal_templates()
         buying, pantry = load_lists_from_sheets()
-        
+
         # ── STEP 2: Scrape & Parse ──
         logger.info("Scraping stores...")
-        all_deals = []
-        raw_texts_for_ai = []  # Collect cleaned text for Gemini
-        
-        for store, url in STORES.items():
-            try:
-                raw_text = get_cached_raw_text(store)
-                if not raw_text:
-                    logger.info(f"  Scraping fresh deals for {store} via Playwright...")
-                    raw_text = scrape_deals_raw(store, url)
-                    if raw_text:
-                        set_cached_raw_text(store, raw_text)
-                else:
-                    logger.info(f"  Using cached deals for {store}.")
-                
-                if raw_text:
-                    # Token Squeezer: Strip HTML/JS before parsing
-                    cleaned_text = strip_html_js(raw_text)
-                    raw_texts_for_ai.append(f"--- {store} ---\n{cleaned_text[:1500]}")
-                    
-                    structured = parse_scraped_text(raw_text, store)
-                    if not structured:
-                        logger.warning(f"[WARNING] No deals found for {store}.")
-                    all_deals.extend(structured)
-                else:
-                    logger.warning(f"[WARNING] Could not retrieve raw text for {store}.")
-            except Exception as e:
-                logger.error(f"[ERROR] Failed to process {store}: {e}")
-        
+        all_deals = collect_deals()
         logger.info(f"Found {len(all_deals)} total deals.")
-        
-        # ── STEP 3: Build deals summary for AI ──
-        deals_summary = "\n".join(raw_texts_for_ai) if raw_texts_for_ai else "No deals available."
 
-        # ── STEP 4: Generate Meal Plan (AI + Rule-Based Fallback) ──
+        # ── STEP 3+4+5: Plan and shopping list ──
         logger.info("Generating meal plan...")
-        
-        # Try AI-enhanced plan first
-        ai_plan = None
+        result = generate_plan(buying, pantry, all_deals, gemini_client)
+
+        # ── STEP 6: Persist locally so the web app sees this run ──
         try:
-            ai_plan = generate_ai_meal_plan(gemini_client, templates, deals_summary, pantry)
+            store.init_db()
+            store.save_plan(result["schedule"], result["flat"],
+                            result["savings"], result["source"])
         except Exception as e:
-            logger.warning(f"[WARNING] AI meal plan failed, using rule-based fallback: {e}")
-        
-        if ai_plan and "meal_plan" in ai_plan:
-            logger.info("[INFO] Using AI-generated meal plan.")
-            # Convert AI plan to internal schedule format
-            schedule = []
-            for day_plan in ai_plan["meal_plan"]:
-                schedule.append({
-                    "day_name": day_plan.get("day", "Unknown"),
-                    "type": day_plan.get("type", "flexible"),
-                    "meal_name": day_plan.get("meal_name", "Flexible"),
-                    "portions": day_plan.get("portions", 0),
-                    "ingredients": day_plan.get("ingredients", []),
-                })
-        else:
-            logger.info("[INFO] Using rule-based meal plan (fallback).")
-            schedule = generate_weekly_plan(templates, pantry, all_deals)
-        
-        # ── STEP 5: Generate Shopping List ──
-        grouped_list, flat_list, total_savings = generate_shopping_list(
-            buying, schedule, all_deals, pantry
-        )
-        
-        # ── STEP 6: Save to Google Sheets ──
+            logger.warning(f"[WARNING] Could not save plan to local store: {e}")
+
+        # ── STEP 7: Save to Google Sheets ──
         logger.info("Saving to Google Sheets...")
-        save_to_sheets(schedule, flat_list)
-        
-        # ── STEP 7: Send Email ──
+        save_to_sheets(result["schedule"], result["flat"])
+
+        # ── STEP 8: Send Email ──
         logger.info("Sending email...")
-        send_email_notification(schedule, grouped_list, total_savings)
-        
+        send_email_notification(result["schedule"], result["grouped"], result["savings"])
+
         logger.info("[SUCCESS] PIPELINE COMPLETE")
 
     except SystemExit:
@@ -1365,5 +1499,7 @@ def main():
         raise
 
 if __name__ == "__main__":
+    AUTO_MODE = parse_args().auto_mode or AUTO_MODE
+    configure_logging(AUTO_MODE)
     main()
 
