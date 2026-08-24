@@ -245,14 +245,17 @@ def parse_scraped_text(raw_text, store_name):
     
     # 1. Broad filter: Must contain currency symbol AND digit
     # Symbols: 'kr', 'dkk', '.-', ',00', '.00'
-    currency_markers = r"(?:kr|dkk|\.-|[,.]00)"
+    # The (?!\d) guards stop a Danish thousands separator reading as a price:
+    # "mere end 35.000 varer" (35 thousand products) matched [,.]00 and became a
+    # 35.00 kr deal. A real price ends after its decimals; 35.000 does not.
+    currency_markers = r"(?:kr|dkk|\.-|[,.]00(?!\d))"
     digit_marker = r"\d"
-    
+
     # 2. Extraction Regex: Supports "10 kr" AND "DKK 10"
     # Group 1: Prefix match (DKK 10) -> returns '10'
     # Group 2: Suffix match (10 kr) -> returns '10'
     extract_pattern = re.compile(
-        r"(?:kr\.?|dkk)\s*(\d+(?:[.,]\d{1,2})?)|(\d+(?:[.,]\d{1,2})?)\s*(?:kr\.?|dkk|\.-|[,.]00)", 
+        r"(?:kr\.?|dkk)\s*(\d+(?:[.,]\d{1,2})?(?!\d))|(\d+(?:[.,]\d{1,2})?(?!\d))\s*(?:kr\.?|dkk|\.-|[,.]00(?!\d))",
         re.IGNORECASE
     )
     

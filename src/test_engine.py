@@ -202,6 +202,25 @@ class TestParseScrapedText(unittest.TestCase):
     def test_lines_without_price_are_skipped(self):
         self.assertEqual(parse_scraped_text("Ugens tilbud\nBare tekst\n", "Netto"), [])
 
+    def test_thousands_separator_is_not_a_price(self):
+        # Danish uses "." for thousands. Foetex's own site says "mere end 35.000
+        # varer" (35 thousand products), which the [,.]00 currency marker read
+        # as a 35.00 kr deal and injected into the shopping list.
+        self.assertEqual(parse_scraped_text("mere end 35.000 varer", "Føtex"), [])
+        self.assertEqual(parse_scraped_text("Vi har 1.500 butikker", "Føtex"), [])
+
+    def test_prices_still_parse_in_every_supported_form(self):
+        for line, expected in [
+            ("Kyllingebryst 700 g 45,00 kr", 45.0),
+            ("Kartofler 2 kg 25.00 kr", 25.0),
+            ("Tilbud 12,00", 12.0),
+            ("Frit valg 15.-", 15.0),
+            ("DKK 20 for pakken", 20.0),
+        ]:
+            deals = parse_scraped_text(line, "Netto")
+            self.assertEqual(len(deals), 1, f"no deal parsed from {line!r}")
+            self.assertEqual(deals[0]["price"], expected)
+
 
 class TestFindDeals(unittest.TestCase):
     def setUp(self):
