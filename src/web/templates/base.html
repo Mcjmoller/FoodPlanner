@@ -39,6 +39,12 @@
     {% endfor %}
 
     <div class="sidebar-foot">
+      <button class="btn btn-sm btn-icon" onclick="openStorePicker()" title="Vælg butikker" aria-label="Vælg butikker">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 9l1.5-5h15L21 9M3 9h18M3 9v10a1 1 0 001 1h16a1 1 0 001-1V9M9 20v-6h6v6"/>
+        </svg>
+      </button>
       <button class="btn btn-sm btn-icon" onclick="toggleTheme()" title="Skift tema" aria-label="Skift tema">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
              stroke-width="1.8" stroke-linecap="round">
@@ -47,6 +53,51 @@
       </button>
     </div>
   </nav>
+
+  <dialog id="store-picker" class="modal">
+    <form method="post" action="/stores">
+      <div class="modal-head">
+        <h2>Hvilke butikker handler du i?</h2>
+        <p>Vi henter kun tilbud fra de butikker du v&aelig;lger. Du kan altid &aelig;ndre det senere.</p>
+      </div>
+
+      <div class="modal-body">
+        {% set groups = {} %}
+        {% for name, cfg in catalog.items() %}
+          {% set _ = groups.setdefault(cfg.owner, []).append(name) %}
+        {% endfor %}
+        {% for owner, names in groups.items() %}
+        <div class="store-owner">
+          <div class="store-owner-name">{{ owner }}</div>
+          {% for name in names %}
+          {% set blocked = catalog[name].status == "blocked" %}
+          <label class="store-option {{ 'blocked' if blocked }}"
+                 {% if blocked %}title="{{ catalog[name].note }}"{% endif %}>
+            <input type="checkbox" name="stores" value="{{ name }}"
+                   {{ "checked" if name in chosen_stores and not blocked }}
+                   {{ "disabled" if blocked }}>
+            <span>{{ name }}</span>
+            {% if blocked %}<span class="store-blocked-mark">utilg&aelig;ngelig</span>{% endif %}
+          </label>
+          {% endfor %}
+        </div>
+        {% endfor %}
+      </div>
+
+      {% if catalog.values()|selectattr("status", "equalto", "blocked")|list %}
+      <div class="modal-notice">
+        Butikker markeret <strong>utilg&aelig;ngelige</strong> udgiver deres tilbudsavis via
+        etilbudsavis.dk, som ikke tillader automatisk hentning. De kan v&aelig;lges igen,
+        hvis der laves en API-aftale med Tjek.
+      </div>
+      {% endif %}
+
+      <div class="modal-foot">
+        <span class="tiny muted">Gemmes i en cookie i denne browser.</span>
+        <button class="btn btn-primary" type="submit">Gem</button>
+      </div>
+    </form>
+  </dialog>
 
   <main class="main">
     {% block content %}{% endblock %}
@@ -66,7 +117,14 @@
     localStorage.setItem("fp-theme", next);
   }
 
-  // The refresh run re-scrapes four stores and takes ~30s. Disable the button and
+  function openStorePicker() {
+    document.getElementById("store-picker").showModal();
+  }
+
+  // First visit: no cookie yet, so ask before anything else happens.
+  {% if needs_store_choice %}openStorePicker();{% endif %}
+
+  // The refresh run re-scrapes the chosen stores and takes ~30s. Disable the button and
   // say so, rather than leaving the page looking frozen.
   document.addEventListener("submit", function (e) {
     var btn = e.target.querySelector('button[type="submit"]');

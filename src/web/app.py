@@ -35,8 +35,35 @@ def _startup():
     store.seed_from_fallback_json()
 
 
+# Store preference is kept in a cookie rather than the database: it is a
+# per-browser display choice, and a cookie means a phone and a laptop can each
+# follow their own local shops without one overwriting the other.
+STORE_COOKIE = "fp_stores"
+COOKIE_MAX_AGE = 60 * 60 * 24 * 365  # one year
+
+
+def selected_stores(request):
+    """
+    Returns the chosen store names, or None when the visitor has not chosen yet
+    (which is what triggers the first-visit picker).
+    """
+    raw = request.cookies.get(STORE_COOKIE)
+    if not raw:
+        return None
+    names = [n for n in raw.split("|") if n in engine.STORE_CATALOG]
+    return names or None
+
+
 def _base_context(request, page):
-    return {"request": request, "page": page}
+    chosen = selected_stores(request)
+    return {
+        "request": request,
+        "page": page,
+        "catalog": engine.STORE_CATALOG,
+        "chosen_stores": chosen or engine.DEFAULT_STORES,
+        # Drives the first-visit modal in base.html
+        "needs_store_choice": chosen is None,
+    }
 
 
 def _redirect(url):
@@ -76,17 +103,34 @@ def dashboard(request: Request):
     })
 
 
+@app.post("/stores")
+def save_stores(request: Request, stores: list[str] = Form(default=[])):
+    """
+    Persists the store choice. Submitting nothing still writes the cookie (with
+    the defaults) so the picker does not reappear on every page load.
+    """
+    valid = [s for s in stores if s in engine.STORE_CATALOG] or engine.DEFAULT_STORES
+    response = _redirect(request.headers.get("referer") or "/")
+    response.set_cookie(
+        STORE_COOKIE, "|".join(valid),
+        max_age=COOKIE_MAX_AGE, samesite="lax", path="/",
+    )
+    return response
+
+
 @app.post("/run")
-def run_pipeline(refresh: str = Form(default="")):
+def run_pipeline(request: Request, refresh: str = Form(default="")):
     """
     Regenerates the plan. Uses cached deals unless 'refresh' is set, in which case
     every store is re-scraped (slow - roughly 30 seconds).
     """
+    picked = selected_stores(request)
     run_id = store.start_run()
     try:
         # "Generer igen" replans from cached prices and is instant. Only the
         # explicit refresh is allowed to open a browser and re-scrape.
-        deals = engine.collect_deals(force_refresh=True) if refresh else engine.cached_deals()
+        deals = (engine.collect_deals(force_refresh=True, store_names=picked)
+                 if refresh else engine.cached_deals(store_names=picked))
 
         # A Gemini key is optional here: without one the deterministic scorer runs,
         # so the app is still usable before anything is configured.
@@ -176,7 +220,9 @@ def buying_delete(item_id: int):
 
 @app.get("/deals")
 def deals_page(request: Request, q: str = "", shop: str = ""):
-    deals = engine.cached_deals()  # never scrapes; refresh is an explicit action
+    picked = selected_stores(request)
+    # Never scrapes; refresh is an explicit action on the dashboard.
+    deals = engine.cached_deals(store_names=picked)
     if shop:
         deals = [d for d in deals if d["store"] == shop]
     if q:
@@ -188,7 +234,7 @@ def deals_page(request: Request, q: str = "", shop: str = ""):
         **_base_context(request, "deals"),
         "deals": deals[:300],
         "total": len(deals),
-        "stores": list(engine.STORES.keys()),
+        "stores": list(engine.resolve_stores(picked).keys()),
         "q": q,
         "shop": shop,
     })
