@@ -117,12 +117,63 @@ SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
 
 # --- STORES ---
-STORES = {
-    "REMA 1000": "https://etilbudsavis.dk/REMA-1000",
-    "Netto": "https://etilbudsavis.dk/Netto",
-    "365 Discount": "https://365discount.coop.dk/365avis/",
-    "Lidl": "https://etilbudsavis.dk/Lidl",
+# Most Danish chains publish through etilbudsavis.dk; the Coop chains only put
+# their catalogue on their own sites. ALDI and Irma are deliberately absent -
+# both left the Danish market in 2023 (REMA 1000 took over most ALDI stores,
+# Irma was folded into Coop), so there is nothing left to scrape.
+#
+# "365 Discount" keeps its original spelling: it is the primary key of the
+# cached scrape rows, and renaming it would orphan the existing cache.
+# status:
+#   "ok"      - scraped successfully
+#   "blocked" - the source refuses scraping; do NOT work around it
+#
+# etilbudsavis.dk (operated by Tjek) began returning a hard refusal:
+#   {"code":1102,"name":"NO_ACCESS","message":"You are not allowed to scrape
+#    our API. This is a violation of our terms of service ..."}
+# That is a licensing matter, not a technical one. Partner API access is
+# available on request via hello@tjek.com; until that exists these stay
+# blocked and unselectable rather than silently returning zero deals.
+BLOCKED_ETILBUDSAVIS = "etilbudsavis.dk afviser scraping (ToS). Kræver API-aftale med Tjek."
+
+STORE_CATALOG = {
+    "365 Discount":         {"url": "https://365discount.coop.dk/365avis/",   "owner": "Coop",          "default": True,  "status": "ok"},
+    "SuperBrugsen/Kvickly": {"url": "https://kvickly.coop.dk/avis/",          "owner": "Coop",          "default": True,  "status": "ok"},
+    "Dagli'Brugsen":        {"url": "https://brugsen.coop.dk/avis/",          "owner": "Coop",          "default": True,  "status": "ok"},
+    "REMA 1000":            {"url": "https://etilbudsavis.dk/REMA-1000",      "owner": "REMA 1000",     "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "Netto":                {"url": "https://etilbudsavis.dk/Netto",          "owner": "Salling Group", "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "Føtex":                {"url": "https://etilbudsavis.dk/fotex",          "owner": "Salling Group", "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "Bilka":                {"url": "https://etilbudsavis.dk/Bilka",          "owner": "Salling Group", "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "Lidl":                 {"url": "https://etilbudsavis.dk/Lidl",           "owner": "Lidl",          "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "MENY":                 {"url": "https://etilbudsavis.dk/MENY",           "owner": "Dagrofa",       "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "SPAR":                 {"url": "https://etilbudsavis.dk/SPAR",           "owner": "Dagrofa",       "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "Min Købmand":          {"url": "https://etilbudsavis.dk/Min-Kobmand",    "owner": "Dagrofa",       "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "LET-KØB":              {"url": "https://etilbudsavis.dk/LET-KOB",        "owner": "Dagrofa",       "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
+    "Nemlig":               {"url": "https://etilbudsavis.dk/nemlig",         "owner": "Nemlig.com",    "status": "blocked", "note": BLOCKED_ETILBUDSAVIS},
 }
+
+AVAILABLE_STORES = [k for k, v in STORE_CATALOG.items() if v.get("status") != "blocked"]
+DEFAULT_STORES = [k for k, v in STORE_CATALOG.items() if v.get("default")]
+
+# Backwards-compatible name -> url mapping used by the scheduled CLI run.
+STORES = {name: cfg["url"] for name, cfg in STORE_CATALOG.items() if cfg.get("default")}
+
+
+def resolve_stores(store_names=None):
+    """
+    Turns a selection into {name: url}, skipping blocked sources. Unknown or
+    blocked names are dropped rather than raising, so a stale cookie naming a
+    chain we can no longer scrape degrades to the remaining valid picks
+    instead of wasting a browser launch on a refusal page.
+    """
+    if not store_names:
+        return dict(STORES)
+    chosen = {
+        n: STORE_CATALOG[n]["url"]
+        for n in store_names
+        if n in STORE_CATALOG and STORE_CATALOG[n].get("status") != "blocked"
+    }
+    return chosen or dict(STORES)
 
 # ============================================================
 #  CACHING & DATABASE (SQLite)
@@ -1279,14 +1330,26 @@ def scrape_deals_raw(store, url):
 
                 page.wait_for_load_state("networkidle", timeout=10000)
 
-                # Simple Cookie Clicker
-                try:
-                    btn = page.locator("button, a").filter(has_text=re.compile(r"accepter|tillad|ok|godkend|yes|ja|luk|accept", re.IGNORECASE)).first
-                    if btn.count() > 0:
-                        btn.click(timeout=1000)
-                        page.wait_for_timeout(1000)
-                except PlaywrightError as e:
-                    logger.debug(f"[DEBUG] {store}: no cookie banner handled ({e})")
+                # Consent banner. Prefer the privacy-preserving option: reject
+                # or necessary-only first, and only fall back to a generic
+                # accept when the banner offers nothing else. The old pattern
+                # matched "tillad" first, which selects "TILLAD ALLE" (allow
+                # all) on the Coop sites - the worst available choice.
+                for pattern in (
+                    r"kun n\wdvendige|only necessary|afvis alle|reject all|n\wdvendige kun",
+                    r"afvis|reject|decline",
+                    r"accepter|godkend|accept|ok",
+                ):
+                    try:
+                        btn = page.locator("button, a").filter(
+                            has_text=re.compile(pattern, re.IGNORECASE)).first
+                        if btn.count() > 0:
+                            btn.click(timeout=1500)
+                            page.wait_for_timeout(1200)
+                            logger.debug(f"[DEBUG] {store}: consent handled via /{pattern}/")
+                            break
+                    except PlaywrightError:
+                        continue
 
             except PlaywrightError as e:
                 # Page may still hold usable text even if a wait timed out, so read on.
@@ -1338,10 +1401,10 @@ def is_automated_run():
 #  also writing to Sheets or sending mail.
 # ============================================================
 
-def collect_deals(force_refresh=False):
-    """Scrapes (or reads from cache) every configured store. Returns parsed deals."""
+def collect_deals(force_refresh=False, store_names=None):
+    """Scrapes (or reads from cache) the selected stores. Returns parsed deals."""
     all_deals = []
-    for store_name, url in STORES.items():
+    for store_name, url in resolve_stores(store_names).items():
         try:
             raw_text = None if force_refresh else get_cached_raw_text(store_name)
             if not raw_text:
@@ -1366,7 +1429,7 @@ def collect_deals(force_refresh=False):
     return all_deals
 
 
-def cached_deals(ignore_expiry=True):
+def cached_deals(ignore_expiry=True, store_names=None):
     """
     Reads parsed deals straight from the cache without ever launching a browser.
     The web app uses this so page loads stay instant; only an explicit refresh
@@ -1380,9 +1443,10 @@ def cached_deals(ignore_expiry=True):
     finally:
         conn.close()
 
+    wanted = set(resolve_stores(store_names))
     deals = []
     for store_name, raw_text, ts in rows:
-        if not raw_text:
+        if not raw_text or store_name not in wanted:
             continue
         if not ignore_expiry and time.time() - ts >= CACHE_EXPIRY_SECONDS:
             continue
@@ -1466,6 +1530,19 @@ def main():
         logger.info("Scraping stores...")
         all_deals = collect_deals()
         logger.info(f"Found {len(all_deals)} total deals.")
+
+        # A plan with no prices is worse than no plan: the shopping list has no
+        # stores, no quantities worth trusting, and the weekly email looks like
+        # it worked. Fail loudly so the scheduled run reports a failure instead.
+        if not all_deals:
+            logger.critical("[ERROR] No deals scraped from any store.")
+            logger.critical(
+                "Every configured source returned nothing. If these are "
+                "etilbudsavis.dk stores, the site now blocks scraping "
+                "(HTTP body: NO_ACCESS / code 1102)."
+            )
+            logger.critical("Skipping Sheets and email. Exiting with code 3.")
+            sys.exit(3)
 
         # ── STEP 3+4+5: Plan and shopping list ──
         logger.info("Generating meal plan...")
