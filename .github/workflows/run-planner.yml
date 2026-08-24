@@ -27,8 +27,13 @@ jobs:
           playwright install-deps
 
       - name: Create Credentials File
-        # Writes the content of the GOOGLE_CREDENTIALS_JSON secret to credentials.json
-        run: echo '${{ secrets.GOOGLE_CREDENTIALS_JSON }}' > credentials.json
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        # Passed through the environment and written with printf. The previous
+        # `echo '${{ secrets... }}'` form broke the moment the JSON contained a
+        # single quote, and interpolating a secret straight into a shell command
+        # exposes it to word splitting.
+        run: printf '%s' "$GOOGLE_CREDENTIALS_JSON" > credentials.json
 
       - name: Run Food Planner
         env:
@@ -36,5 +41,22 @@ jobs:
           EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+          # Optional; main.py falls back to "Food Planner" when unset.
+          SPREADSHEET_NAME: ${{ secrets.SPREADSHEET_NAME }}
           FOODPLANNER_AUTOMATED: "1"  # Disable interactive prompts
         run: python src/main.py --auto
+
+      - name: Upload run output
+        # NB: this run's SQLite database is discarded with the runner, so the
+        # plan does NOT appear in the web app's history - Sheets and the email
+        # are the durable outputs. These artifacts exist so a failed or
+        # surprising run can be inspected after the fact.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: planner-run-${{ github.run_number }}
+          path: |
+            automation_log_*.txt
+            data/deals_cache.db
+          retention-days: 14
+          if-no-files-found: warn
